@@ -546,6 +546,44 @@ function json(data: unknown, status = 200): Response {
 const tokenRateLimit = new Map<string, number[]>();
 
 // ---------------------------------------------------------------------------
+// Role-based auth helper
+// ---------------------------------------------------------------------------
+const WRITE_ROLES = new Set(["event_admin", "chairman", "scrutineer"]);
+const ROLE_PERMISSIONS: Record<string, Set<string>> = {
+  event_admin: new Set(["checkin", "marshal", "heat_state", "score", "score_submission", "scratch", "nowplaying", "result_publish", "chairman_override"]),
+  chairman: new Set(["marshal", "heat_state", "nowplaying", "chairman_override"]),
+  scrutineer: new Set(["score", "score_submission", "result_publish"]),
+  judge: new Set(["score", "score_submission"]),
+  marshal: new Set(["marshal", "checkin"]),
+  scanner: new Set(["checkin"]),
+  announcer: new Set([]),
+  dj: new Set([]),
+  videographer: new Set([]),
+  deck_captain: new Set(["marshal"]),
+};
+
+function canWrite(role: string | undefined, opType: string): boolean {
+  if (!role) return false;
+  const perms = ROLE_PERMISSIONS[role];
+  if (!perms) return false;
+  return perms.has(opType);
+}
+
+// Op pruning: remove old synced ops to keep the DB lean
+const OP_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const OP_PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+let lastPruneAt = 0;
+function pruneOldOps(): void {
+  const now = Date.now();
+  if (now - lastPruneAt < OP_PRUNE_INTERVAL_MS) return;
+  lastPruneAt = now;
+  const cutoff = now - OP_PRUNE_AGE_MS;
+  try {
+    queryRun(`DELETE FROM ops WHERE synced_at IS NOT NULL AND received_at_ms < ?`, [cutoff]);
+  } catch { /* best-effort */ }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP + WS server
 // ---------------------------------------------------------------------------
 Deno.serve({ port: PORT }, async (req) => {
@@ -678,7 +716,7 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
     return json({ ok: true, claims });
   }
 
-  // ---- Ops batch ingest ----
+  // ---- Ops batch ingest (role-based auth enforced) ----
   if (url.pathname === "/ops/batch" && req.method === "POST") {
     const claims = await authenticate(req);
     if (!claims) return json({ error: "unauthorized" }, 401);
@@ -688,10 +726,19 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
       return json({ error: "invalid body — expected { ops: [...] }" }, 400);
     }
 
+    // Periodic op pruning (non-blocking best-effort)
+    pruneOldOps();
+
     const results: Array<{ op_id: string | null; accepted: boolean; reason?: string }> = [];
     for (const raw of body.ops) {
       if (!raw?.op_id || !raw?.event_id || !raw?.op_type || !raw?.created_at_ms) {
         results.push({ op_id: raw?.op_id ?? null, accepted: false, reason: "invalid" });
+        continue;
+      }
+
+      // Role-based write permission check
+      if (!canWrite(claims.role, String(raw.op_type))) {
+        results.push({ op_id: raw?.op_id ?? null, accepted: false, reason: "forbidden" });
         continue;
       }
 
@@ -818,9 +865,48 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
         return json({ event_id: EVENT_ID, results: rows });
       }
 
+      case "ref_data": {
+        const tableName = url.searchParams.get("table");
+        if (tableName) {
+          const rows = queryRows(
+            `SELECT table_name, data_json, fetched_at FROM ref_data WHERE event_id=? AND table_name=?`,
+            [EVENT_ID, tableName],
+          );
+          if (rows.length === 0) return json({ event_id: EVENT_ID, ref_data: null });
+          const [tbl, dataJson, fetchedAt] = rows[0];
+          return json({ event_id: EVENT_ID, ref_data: { table_name: tbl, data: JSON.parse(String(dataJson)), fetched_at: fetchedAt } });
+        }
+        const rows = queryRows(
+          `SELECT table_name, data_json, fetched_at FROM ref_data WHERE event_id=?`,
+          [EVENT_ID],
+        ).map(([tbl, dataJson, fetchedAt]) => ({
+          table_name: tbl, data: JSON.parse(String(dataJson)), fetched_at: fetchedAt,
+        }));
+        return json({ event_id: EVENT_ID, ref_data: rows });
+      }
+
       default:
         return json({ error: `unknown state kind: ${kind}` }, 404);
     }
+  }
+
+  // ---- Ref data ingest (admin only) ----
+  if (url.pathname === "/state/ref_data" && req.method === "POST") {
+    const claims = await authenticate(req);
+    if (!claims) return json({ error: "unauthorized" }, 401);
+    if (claims.role !== "event_admin") return json({ error: "forbidden — admin only" }, 403);
+
+    const body = await req.json().catch(() => null);
+    if (!body?.table_name || !body?.data) {
+      return json({ error: "table_name and data required" }, 400);
+    }
+    const fetchedAt = new Date().toISOString();
+    queryRun(
+      `INSERT INTO ref_data(event_id, table_name, data_json, fetched_at) VALUES(?,?,?,?)
+       ON CONFLICT(event_id, table_name) DO UPDATE SET data_json=excluded.data_json, fetched_at=excluded.fetched_at`,
+      [EVENT_ID, body.table_name, JSON.stringify(body.data), fetchedAt],
+    );
+    return json({ ok: true, table_name: body.table_name, fetched_at: fetchedAt });
   }
 
   // ---- Ops history (for upstream sync) ----
@@ -891,6 +977,11 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
           socket.send(JSON.stringify({ type: "pong", time: Date.now() }));
         }
         if (m?.type === "op" && m?.op) {
+          // Role-based write permission check on WebSocket ops
+          if (!canWrite(claims.role, String(m.op.op_type))) {
+            socket.send(JSON.stringify({ type: "op.result", op_id: m.op.op_id, accepted: false, reason: "forbidden" }));
+            return;
+          }
           const op: Op = {
             ...m.op,
             event_id: EVENT_ID,
