@@ -49,6 +49,7 @@ jobs:
         run: cargo install tauri-cli --version "^1"
 
       - name: Compile EventBox server
+        shell: bash
         run: |
           deno compile --no-check \
             --allow-net --allow-read --allow-write --allow-env --allow-ffi \
