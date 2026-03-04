@@ -35,6 +35,16 @@ const SECRET =
 
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
+// HTML escape helper — prevents XSS in server-rendered templates
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 if (!EVENT_ID) {
   console.error("ERROR: EVENTBOX_EVENT_ID is required. Pass it via env or --event-id flag.");
   Deno.exit(1);
@@ -322,84 +332,91 @@ function applyOp(op: Op): ApplyResult {
 
   const now = Date.now();
 
-  // 1. Idempotent insert into op log
+  // Wrap entire op application in a transaction for atomicity.
+  // If FSM rejects, the op log INSERT is rolled back too.
+  db.exec("BEGIN");
   try {
-    queryRun(
-      `INSERT INTO ops(op_id,event_id,actor_device_id,actor_role,op_type,entity_type,entity_id,payload_json,created_at_ms,received_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [
-        op.op_id, op.event_id, op.actor_device_id ?? null,
-        op.actor_role ?? null, op.op_type, op.entity_type ?? null,
-        op.entity_id ?? null, JSON.stringify(op.payload ?? {}),
-        op.created_at_ms, now,
-      ],
-    );
-  } catch {
-    return { accepted: false, reason: "duplicate" };
-  }
-
-  // 2. Reduce into materialized state
-  const p = op.payload as Record<string, unknown>;
-
-  switch (op.op_type) {
-    case "checkin": {
-      if (p?.credential_id && p?.status) {
-        queryRun(
-          `INSERT INTO checkins(event_id,credential_id,status,device_id,updated_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,credential_id) DO UPDATE SET
-             status=excluded.status, device_id=excluded.device_id, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.credential_id, p.status, op.actor_device_id ?? null, now],
-        );
-      }
-      break;
+    // 1. Idempotent insert into op log
+    try {
+      queryRun(
+        `INSERT INTO ops(op_id,event_id,actor_device_id,actor_role,op_type,entity_type,entity_id,payload_json,created_at_ms,received_at_ms)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [
+          op.op_id, op.event_id, op.actor_device_id ?? null,
+          op.actor_role ?? null, op.op_type, op.entity_type ?? null,
+          op.entity_id ?? null, JSON.stringify(op.payload ?? {}),
+          op.created_at_ms, now,
+        ],
+      );
+    } catch {
+      db.exec("ROLLBACK");
+      return { accepted: false, reason: "duplicate" };
     }
 
-    case "marshal": {
-      if (p?.heat_entry_id && p?.status) {
-        const rows = queryRows(
-          `SELECT status FROM marshal_status WHERE event_id=? AND heat_entry_id=?`,
-          [op.event_id, p.heat_entry_id],
-        );
-        const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+    // 2. Reduce into materialized state
+    const p = op.payload as Record<string, unknown>;
 
-        if (!isFsmAllowed(currentState, p.status as string)) {
-          return { accepted: false, reason: "fsm_rejected" };
+    switch (op.op_type) {
+      case "checkin": {
+        if (p?.credential_id && p?.status) {
+          queryRun(
+            `INSERT INTO checkins(event_id,credential_id,status,device_id,updated_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,credential_id) DO UPDATE SET
+               status=excluded.status, device_id=excluded.device_id, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.credential_id, p.status, op.actor_device_id ?? null, now],
+          );
         }
-
-        queryRun(
-          `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
-             status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.heat_entry_id, p.status, op.actor_device_id ?? null, now],
-        );
+        break;
       }
-      break;
-    }
 
-    case "heat_state": {
-      if (p?.heat_id && p?.status) {
-        const rows = queryRows(
-          `SELECT status FROM heat_status WHERE event_id=? AND heat_id=?`,
-          [op.event_id, p.heat_id],
-        );
-        const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+      case "marshal": {
+        if (p?.heat_entry_id && p?.status) {
+          const rows = queryRows(
+            `SELECT status FROM marshal_status WHERE event_id=? AND heat_entry_id=?`,
+            [op.event_id, p.heat_entry_id],
+          );
+          const currentState = rows.length > 0 ? String(rows[0][0]) : null;
 
-        if (!isFsmAllowed(currentState, p.status as string)) {
-          return { accepted: false, reason: "fsm_rejected" };
+          if (!isFsmAllowed(currentState, p.status as string)) {
+            db.exec("ROLLBACK");
+            return { accepted: false, reason: "fsm_rejected" };
+          }
+
+          queryRun(
+            `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
+               status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.heat_entry_id, p.status, op.actor_device_id ?? null, now],
+          );
         }
-
-        queryRun(
-          `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_id) DO UPDATE SET
-             status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.heat_id, p.status, op.actor_device_id ?? null, now],
-        );
+        break;
       }
-      break;
-    }
+
+      case "heat_state": {
+        if (p?.heat_id && p?.status) {
+          const rows = queryRows(
+            `SELECT status FROM heat_status WHERE event_id=? AND heat_id=?`,
+            [op.event_id, p.heat_id],
+          );
+          const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+
+          if (!isFsmAllowed(currentState, p.status as string)) {
+            db.exec("ROLLBACK");
+            return { accepted: false, reason: "fsm_rejected" };
+          }
+
+          queryRun(
+            `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_id) DO UPDATE SET
+               status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.heat_id, p.status, op.actor_device_id ?? null, now],
+          );
+        }
+        break;
+      }
 
     case "score": {
       if (p?.heat_id && p?.dance_code && p?.judge_assignment_id && p?.heat_entry_id) {
@@ -498,7 +515,14 @@ function applyOp(op: Op): ApplyResult {
       break;
   }
 
-  // 3. Broadcast to all connected peers
+    // 3. Commit the transaction — op log + materialized state are consistent
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+
+  // 4. Broadcast to all connected peers (outside transaction)
   broadcastToEvent(op.event_id, { type: "op.applied", op });
 
   return { accepted: true };
@@ -542,7 +566,7 @@ Deno.serve({ port: PORT }, async (req) => {
   if (url.pathname === "/" && req.method === "GET") {
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — ${EVENT_ID.slice(0,8)}</title>
+<title>EventBox — ${escapeHtml(EVENT_ID.slice(0,8))}</title>
 <style>
 *{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center}
 .card{background:#1e293b;border-radius:16px;padding:2.5rem;max-width:480px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5)}
@@ -560,19 +584,19 @@ a{color:#818cf8}hr{border:none;border-top:1px solid #334155;margin:1.5rem 0}
 <h1>EventBox<span class="badge">Running</span></h1>
 <p style="color:#94a3b8;font-size:.85rem;margin-top:.25rem">LAN Authority Server v0.3</p>
 <div class="info">
-<span class="label">Event ID:</span> <span class="val">${EVENT_ID}</span><br>
-<span class="label">Port:</span> <span class="val">${PORT}</span><br>
-<span class="label">Database:</span> <span class="val">${DB_PATH}</span>
+<span class="label">Event ID:</span> <span class="val">${escapeHtml(EVENT_ID)}</span><br>
+<span class="label">Port:</span> <span class="val">${escapeHtml(String(PORT))}</span><br>
+<span class="label">Database:</span> <span class="val">${escapeHtml(DB_PATH)}</span>
 </div>
 <p style="color:#94a3b8;font-size:.85rem">Room Code:</p>
-<div class="code">${ROOM_CODE}</div>
+<div class="code">${escapeHtml(ROOM_CODE)}</div>
 <p class="hint">Share this code with staff devices to connect. They can join at <strong>/staff</strong> or enter the code in the PWA.</p>
 <hr>
 <div class="actions">
 <a href="/health">Health Check</a>
 <a href="/staff">Staff Join</a>
 </div>
-<p class="hint" style="margin-top:1.5rem">📱 Staff devices should connect to this machine's local IP on port ${PORT}. The PWA app will auto-detect the EventBox when configured.</p>
+<p class="hint" style="margin-top:1.5rem">📱 Staff devices should connect to this machine's local IP on port ${escapeHtml(String(PORT))}. The PWA app will auto-detect the EventBox when configured.</p>
 </div></body></html>`;
     return new Response(html, { headers: { "content-type": "text/html" } });
   }
@@ -600,10 +624,10 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
 <div class="badge">✓ All Systems OK</div>
 <div class="info">
 <span class="label">Status:</span> <span class="val">Running</span><br>
-<span class="label">Event ID:</span> <span class="val">${EVENT_ID}</span><br>
+<span class="label">Event ID:</span> <span class="val">${escapeHtml(EVENT_ID)}</span><br>
 <span class="label">Version:</span> <span class="val">0.3.0</span><br>
-<span class="label">Time:</span> <span class="val">${new Date().toISOString()}</span><br>
-<span class="label">Port:</span> <span class="val">${PORT}</span>
+<span class="label">Time:</span> <span class="val">${escapeHtml(new Date().toISOString())}</span><br>
+<span class="label">Port:</span> <span class="val">${escapeHtml(String(PORT))}</span>
 </div>
 <a class="back" href="/">← Back to Dashboard</a>
 </div></body></html>`;
@@ -885,12 +909,12 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
   // ---- Staff Sessions (BYOD) ----
 
   function generateJoinCode(): string {
-    return Array.from(crypto.getRandomValues(new Uint8Array(4)))
-      .map((b) => b.toString(36).slice(-1))
+    // Generate 6 fully random base-36 characters (0-9, A-Z)
+    // Uses 6 random bytes, each mapped to a base-36 char
+    return Array.from(crypto.getRandomValues(new Uint8Array(6)))
+      .map((b) => (b % 36).toString(36))
       .join("")
-      .toUpperCase()
-      .slice(0, 6)
-      .padEnd(6, "A");
+      .toUpperCase();
   }
 
   // POST /api/staff-sessions — Create a staff session (admin auth required)
@@ -1012,7 +1036,7 @@ button:hover{background:#4f46e5}button:disabled{opacity:.5;cursor:not-allowed}
 <body><div class="card">
 <h1>Staff Join</h1>
 <p class="subtitle">Enter your join code to connect</p>
-<input id="code" placeholder="ABC123" maxlength="8" value="${joinCode}" autofocus>
+<input id="code" placeholder="ABC123" maxlength="8" value="${escapeHtml(joinCode)}" autofocus>
 <button id="btn" onclick="join()">Connect</button>
 <div class="msg" id="msg"></div>
 <a class="back" href="/">← Back to Dashboard</a>
@@ -1143,7 +1167,7 @@ function go(){
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>EventBox — Open App</title>
-<meta http-equiv="refresh" content="3;url=${redirectUrl}">
+<meta http-equiv="refresh" content="3;url=${escapeHtml(redirectUrl)}">
 <style>
 *{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center}
 .card{background:#1e293b;border-radius:16px;padding:2.5rem;max-width:400px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5);text-align:center}
@@ -1154,7 +1178,7 @@ a{color:#818cf8}
 <body><div class="card">
 <h1>Opening App…</h1>
 <p>Redirecting you to the app. If it doesn't open automatically:</p>
-<p><a href="${redirectUrl}">Open App →</a></p>
+<p><a href="${escapeHtml(redirectUrl)}">Open App →</a></p>
 <p style="margin-top:1rem;font-size:.75rem">If you're offline, open the installed app on your device and enter your staff code there.</p>
 </div></body></html>`;
     return new Response(html, { headers: { "content-type": "text/html" } });
