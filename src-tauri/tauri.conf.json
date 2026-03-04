@@ -30,7 +30,7 @@
         "minimumSystemVersion": "10.15"
       },
       "resources": [
-        "resources/server.ts"
+        "resources/eventbox-server*"
       ]
     },
     "allowlist": {

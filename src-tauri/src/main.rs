@@ -36,27 +36,22 @@ fn start_server(state: &Arc<Mutex<ServerState>>, app: &tauri::AppHandle) {
         return; // already running
     }
 
-    // Resolve bundled server.ts
+    // Resolve bundled compiled server binary
+    let server_bin = if cfg!(target_os = "windows") {
+        "resources/eventbox-server.exe"
+    } else {
+        "resources/eventbox-server"
+    };
     let resource_path = app
         .path_resolver()
-        .resolve_resource("resources/server.ts")
-        .expect("Failed to resolve server.ts resource");
+        .resolve_resource(server_bin)
+        .expect("Failed to resolve eventbox-server binary");
 
     let port = s.port;
     let event_id = s.event_id.clone();
 
-    let mut cmd = Command::new("deno");
-    cmd.args([
-        "run",
-        "--allow-net",
-        "--allow-read",
-        "--allow-write",
-        "--allow-env",
-        "--allow-ffi",
-        "--unstable-ffi",
-        resource_path.to_str().unwrap(),
-    ])
-    .env("EVENTBOX_PORT", port.to_string())
+    let mut cmd = Command::new(&resource_path);
+    cmd.env("EVENTBOX_PORT", port.to_string())
     .env("EVENTBOX_EVENT_ID", &event_id)
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
@@ -110,10 +105,10 @@ fn start_server(state: &Arc<Mutex<ServerState>>, app: &tauri::AppHandle) {
             }));
         }
         Err(e) => {
-            eprintln!("Failed to start Deno server: {}", e);
+            eprintln!("Failed to start EventBox server: {}", e);
             let _ = app.emit_all("server-status", serde_json::json!({
                 "running": false,
-                "error": format!("Failed to start: {}. Is Deno installed?", e),
+                "error": format!("Failed to start server: {}", e),
             }));
         }
     }

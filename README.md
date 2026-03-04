@@ -1,159 +1,177 @@
-# EventBox Desktop App
+# EventBox
 
-A native desktop application that bundles the EventBox LAN server. One-click start — no terminal needed.
+**One-click desktop app for running the EventBox LAN server at dance competitions.**
 
-## What It Does
+No terminal. No dependencies. Just download, install, and go.
 
-1. **Launches the Deno server** as a background process
-2. **Shows a dashboard** with room code, QR code, and local IP addresses
-3. **System tray icon** — server keeps running when you close the window
-4. **Auto-starts** when an event ID is configured
+---
 
-## Prerequisites
+## Download & Install
+
+Go to the [Releases](https://github.com/W-A-I-T/EventBox/releases) page and download the installer for your platform:
+
+| Platform | File | How to Install |
+|----------|------|----------------|
+| **Windows** | `EventBox_x.x.x_x64_en-US.msi` | Double-click the `.msi` file |
+| **macOS** | `EventBox_x.x.x_aarch64.dmg` | Open the `.dmg`, drag EventBox to Applications |
+| **Linux** | `event-box_x.x.x_amd64.deb` | `sudo dpkg -i event-box_*.deb` or double-click |
+| **Linux** | `event-box_x.x.x_amd64.AppImage` | Right-click > Properties > Permissions > Allow executing, then double-click |
+
+> **Everything is bundled.** No Deno, no Rust, no Node.js needed on the user's machine.
+
+---
+
+## How to Use
+
+1. **Open EventBox** from your Applications menu or desktop
+2. **Paste your Event ID** and click **Start**
+3. The server starts in the background with a **system tray icon**
+4. A **room code** and **QR code** appear on the dashboard
+5. Staff connect their devices by scanning the QR code or entering the room code
+6. **Close the window** — the server keeps running in the tray
+7. Click the **tray icon** to open the dashboard again, or **Quit** to stop everything
+
+### Command-Line Options (optional)
+
+```bash
+# Pre-configure event ID
+./EventBox --event-id "your-event-uuid"
+
+# Custom port (default: 8787)
+./EventBox --event-id "your-event-uuid" --port 9090
+
+# Or use environment variables
+EVENTBOX_EVENT_ID="your-event-uuid" EVENTBOX_PORT=9090 ./EventBox
+```
+
+---
+
+## For Developers
+
+### Prerequisites
 
 | Tool | Version | Install |
 |------|---------|---------|
 | **Rust** | 1.70+ | [rustup.rs](https://rustup.rs) |
-| **Deno** | 1.40+ | [deno.land](https://deno.land/#installation) |
-| **Tauri CLI** | 1.x | `cargo install tauri-cli` |
+| **Deno** | 2.x | [deno.land](https://deno.land/#installation) |
+| **Tauri CLI** | 1.x | `cargo install tauri-cli --version "^1"` |
 
-### Platform-Specific
+**Linux only:**
+```bash
+sudo apt install libwebkit2gtk-4.0-dev build-essential libssl-dev \
+  libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+```
 
-**Windows:**
-- [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "C++ build tools" workload
+**macOS only:**
+```bash
+xcode-select --install
+```
+
+**Windows only:**
+- [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "C++ build tools"
 - [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (pre-installed on Windows 11)
 
-**macOS:**
-- Xcode Command Line Tools: `xcode-select --install`
-
-**Linux:**
-```bash
-# Debian/Ubuntu
-sudo apt install libwebkit2gtk-4.0-dev build-essential curl wget file \
-  libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
-# Fedora
-sudo dnf install webkit2gtk4.0-devel openssl-devel gtk3-devel \
-  libappindicator-gtk3-devel librsvg2-devel
-```
-
-## Build Instructions
-
-### 1. Copy the server file
-
-```bash
-npm run copy-server
-```
-
-This copies the latest server.ts into `src-tauri/resources/`. (In the standalone repo, the server is already bundled.)
-
-### 2. Development mode
+### Development
 
 ```bash
 npm run tauri:dev
 ```
 
-Or directly:
-```bash
-cd src-tauri && cargo tauri dev
-```
+This compiles the server into a standalone binary, then launches the app with hot-reload.
 
-This opens the app with hot-reload and Rust debugging.
-
-### 3. Production build
+### Production Build
 
 ```bash
 npm run tauri:build
 ```
 
-Or directly:
-```bash
-cd src-tauri && cargo tauri build
-```
+This:
+1. Compiles `server.ts` into a standalone `eventbox-server` binary (via `deno compile`)
+2. Builds the Tauri app with the server bundled inside
+3. Produces platform-specific installers in `src-tauri/target/release/bundle/`
 
-Output locations:
-- **Windows:** `src-tauri/target/release/bundle/msi/EventBox_0.1.0_x64_en-US.msi`
-- **macOS:** `src-tauri/target/release/bundle/dmg/EventBox_0.1.0_aarch64.dmg`
-- **Linux:** `src-tauri/target/release/bundle/deb/eventbox_0.1.0_amd64.deb` and `.AppImage`
-
-### 4. Run with event ID
+### Cross-Platform Server Compilation
 
 ```bash
-# Via environment variable
-EVENTBOX_EVENT_ID="your-event-uuid" ./EventBox
+# Current platform (auto-detect)
+npm run compile-server
 
-# Via CLI argument
-./EventBox --event-id "your-event-uuid"
-
-# With custom port
-./EventBox --event-id "your-event-uuid" --port 9090
+# Specific targets
+npm run compile-server:windows   # x86_64-pc-windows-msvc
+npm run compile-server:mac-arm   # aarch64-apple-darwin
+npm run compile-server:mac-intel # x86_64-apple-darwin
+npm run compile-server:linux     # x86_64-unknown-linux-gnu
 ```
 
-## CI Build (GitHub Actions)
+---
 
-Create `.github/workflows/build.yml`:
+## CI/CD
 
-```yaml
-name: Build EventBox
-on:
-  push:
-    tags: ['v*']
+A GitHub Actions workflow (`.github/workflows/build.yml`) is included that:
 
-jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v1
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev
-      - name: Build
-        run: npm run tauri:build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: eventbox-${{ matrix.target }}
-          path: src-tauri/target/release/bundle/**
+1. Builds for **Windows**, **macOS**, and **Linux** in parallel
+2. Compiles the server binary for each target platform
+3. Produces `.msi`, `.dmg`, `.deb`, and `.AppImage` installers
+4. On tagged releases (`v*`), automatically creates a GitHub Release with all installers attached
+
+### Triggering a Release
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```
+
+The workflow runs automatically and publishes the installers to the Releases page.
+
+---
 
 ## Architecture
 
 ```
 EventBox/
+├── .github/workflows/
+│   └── build.yml               # CI: multi-platform build & release
 ├── src-tauri/
-│   ├── Cargo.toml          # Rust dependencies
-│   ├── tauri.conf.json      # Window config, bundling
-│   ├── build.rs             # Tauri build script
+│   ├── Cargo.toml              # Rust dependencies (Tauri, serde, local-ip-address)
+│   ├── Cargo.lock              # Locked dependency versions
+│   ├── tauri.conf.json         # Window config, bundling, system tray
+│   ├── build.rs                # Tauri build script
+│   ├── icons/                  # App icons (PNG, ICO, ICNS)
 │   ├── src/
-│   │   └── main.rs          # Spawn Deno, system tray, IPC
+│   │   └── main.rs             # Rust: spawn server, system tray, IPC
 │   └── resources/
-│       └── server.ts        # Bundled EventBox server
+│       ├── server.ts           # EventBox LAN server source
+│       └── eventbox-server*    # Compiled server binary (built during build)
 ├── src/
-│   └── dashboard.html       # Dashboard UI (Tauri webview)
-├── package.json             # Build scripts
-├── LICENSE                  # GPL-3.0
-└── README.md                # This file
+│   └── dashboard.html          # Dashboard UI (room code, QR, IPs, controls)
+├── package.json                # Build scripts
+├── .gitignore
+├── LICENSE                     # GPL-3.0
+└── README.md
 ```
+
+### How It Works
+
+- **Tauri** (Rust) creates a native desktop window with a webview
+- On start, the Rust backend spawns the **compiled EventBox server** as a subprocess
+- The server generates a **room code** and prints it to stdout
+- Rust captures the room code and sends it to the **dashboard UI** via Tauri events
+- The **system tray** lets users Start/Stop the server and Quit the app
+- Closing the window **hides** it to the tray — the server keeps running
+
+---
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| "Deno not found" | Install Deno and ensure it's in your PATH |
 | "WebView2 not found" (Windows) | Install from [Microsoft](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) |
-| Build fails on Linux | Install the webkit2gtk dev packages (see Prerequisites) |
+| Build fails on Linux | Install webkit2gtk dev packages (see Prerequisites) |
 | Server won't start | Check that port 8787 isn't already in use |
-| No QR code shown | QR generation requires a JS library — see dashboard.html comments |
+| App won't open on macOS | Right-click > Open (first time only, to bypass Gatekeeper) |
+
+---
+
+## License
+
+[GPL-3.0](LICENSE)
