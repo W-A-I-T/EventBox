@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EventBox</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+      user-select: none;
+    }
+    .header { text-align: center; margin-bottom: 1.5rem; }
+    .header h1 { font-size: 1.75rem; color: #fff; margin-bottom: .25rem; }
+    .header p { font-size: .8rem; color: #64748b; }
+
+    .status-dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .status-dot.running { background: #22c55e; box-shadow: 0 0 8px #22c55e80; }
+    .status-dot.stopped { background: #ef4444; }
+
+    .card {
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 440px;
+      margin-bottom: 1rem;
+    }
+
+    .room-code {
+      font-size: 3rem;
+      font-weight: 800;
+      letter-spacing: .4em;
+      text-align: center;
+      color: #f59e0b;
+      padding: 1rem 0;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+    .room-code:hover { opacity: .8; }
+    .room-code:active { opacity: .6; }
+
+    .label { font-size: .75rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .5rem; }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: .5rem 0;
+      border-bottom: 1px solid #334155;
+      font-size: .85rem;
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-row .key { color: #94a3b8; }
+    .info-row .val { color: #38bdf8; font-family: monospace; }
+
+    #qr-container {
+      display: flex;
+      justify-content: center;
+      padding: 1rem;
+      background: #fff;
+      border-radius: 8px;
+      margin: 1rem 0;
+    }
+
+    .ip-list { list-style: none; padding: 0; }
+    .ip-list li {
+      font-family: monospace;
+      font-size: .85rem;
+      color: #38bdf8;
+      padding: .25rem 0;
+      cursor: pointer;
+    }
+    .ip-list li:hover { color: #7dd3fc; }
+
+    .event-input-wrap {
+      display: flex;
+      gap: .5rem;
+      margin-top: .75rem;
+    }
+    .event-input-wrap input {
+      flex: 1;
+      padding: .65rem .75rem;
+      border-radius: 8px;
+      border: 2px solid #334155;
+      background: #0f172a;
+      color: #fff;
+      font-size: .85rem;
+      outline: none;
+    }
+    .event-input-wrap input:focus { border-color: #6366f1; }
+
+    .btn {
+      padding: .65rem 1.25rem;
+      border-radius: 8px;
+      border: none;
+      font-size: .85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-primary { background: #6366f1; color: #fff; }
+    .btn-primary:hover { background: #4f46e5; }
+    .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-danger { background: #dc2626; color: #fff; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn-outline { background: transparent; border: 2px solid #334155; color: #e2e8f0; }
+    .btn-outline:hover { background: #1e293b; }
+
+    .controls { display: flex; gap: .5rem; justify-content: center; margin-top: .5rem; }
+
+    .toast {
+      position: fixed;
+      bottom: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #334155;
+      color: #e2e8f0;
+      padding: .5rem 1.25rem;
+      border-radius: 8px;
+      font-size: .8rem;
+      opacity: 0;
+      transition: opacity .3s;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+
+    .error-msg {
+      background: #7f1d1d;
+      color: #fca5a5;
+      padding: .75rem;
+      border-radius: 8px;
+      font-size: .8rem;
+      margin-top: .75rem;
+      text-align: center;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>EventBox</h1>
+    <p>LAN Authority Server</p>
+  </div>
+
+  <!-- Setup card (when no event ID) -->
+  <div class="card" id="setup-card">
+    <p class="label">Event Configuration</p>
+    <p style="font-size:.85rem;color:#94a3b8;margin:.75rem 0">Enter the Event ID to start the server.</p>
+    <div class="event-input-wrap">
+      <input type="text" id="event-id-input" placeholder="Paste event ID…">
+      <button class="btn btn-primary" id="start-btn" onclick="handleStart()">Start</button>
+    </div>
+    <div id="setup-error" class="error-msg hidden"></div>
+  </div>
+
+  <!-- Running card -->
+  <div class="card hidden" id="running-card">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <span class="status-dot running" id="status-dot"></span>
+        <span style="font-weight:600;font-size:.9rem" id="status-text">Running</span>
+      </div>
+      <button class="btn btn-danger" style="font-size:.75rem;padding:.4rem .75rem" onclick="handleStop()">Stop</button>
+    </div>
+
+    <p class="label" style="margin-top:1.25rem">Room Code</p>
+    <div class="room-code" id="room-code" onclick="copyCode()" title="Click to copy">------</div>
+
+    <div id="qr-container">
+      <canvas id="qr-canvas" width="180" height="180"></canvas>
+    </div>
+
+    <p class="label">Network</p>
+    <ul class="ip-list" id="ip-list"></ul>
+
+    <p class="label" style="margin-top:1rem">Details</p>
+    <div class="info-row"><span class="key">Port</span><span class="val" id="detail-port">8787</span></div>
+    <div class="info-row"><span class="key">Event ID</span><span class="val" id="detail-event" style="font-size:.7rem;word-break:break-all"></span></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ---- State ----
+    let serverRunning = false;
+    let roomCode = '';
+    let port = 8787;
+    let localIps = [];
+    let eventId = '';
+
+    // ---- Tauri event listeners ----
+    // Check if running inside Tauri
+    const isTauri = window.__TAURI__ !== undefined;
+
+    if (isTauri) {
+      const { listen } = window.__TAURI__.event;
+
+      listen('server-status', (e) => {
+        const d = e.payload;
+        serverRunning = !!d.running;
+        if (d.room_code) roomCode = d.room_code;
+        if (d.port) port = d.port;
+        if (d.event_id) eventId = d.event_id;
+        if (d.error) showError(d.error);
+        updateUI();
+      });
+
+      listen('local-ips', (e) => {
+        localIps = e.payload.ips || [];
+        updateUI();
+      });
+    } else {
+      // Standalone mode (opened in browser for dev)
+      document.getElementById('setup-card').querySelector('p').textContent = 
+        'Development mode — this UI is designed to run inside the EventBox desktop app.';
+    }
+
+    // ---- Actions ----
+    function handleStart() {
+      const input = document.getElementById('event-id-input');
+      const id = input.value.trim();
+      if (!id) {
+        showError('Please enter an Event ID');
+        return;
+      }
+      eventId = id;
+      if (isTauri) {
+        // In Tauri, the setup auto-starts. For manual start, we'd use a command.
+        // For now, show "restart required" since event ID is set at launch
+        showError('Set event ID before launching the app, or restart with: --event-id ' + id);
+      }
+    }
+
+    function handleStop() {
+      // Tauri tray handles this, but we can also trigger from UI
+      if (isTauri && window.__TAURI__.process) {
+        // The tray "stop" menu item handles this
+      }
+      serverRunning = false;
+      updateUI();
+    }
+
+    function copyCode() {
+      if (!roomCode) return;
+      navigator.clipboard.writeText(roomCode).then(() => showToast('Room code copied!'));
+    }
+
+    // ---- UI ----
+    function updateUI() {
+      const setupCard = document.getElementById('setup-card');
+      const runningCard = document.getElementById('running-card');
+
+      if (serverRunning && roomCode) {
+        setupCard.classList.add('hidden');
+        runningCard.classList.remove('hidden');
+
+        document.getElementById('room-code').textContent = roomCode;
+        document.getElementById('detail-port').textContent = port;
+        document.getElementById('detail-event').textContent = eventId;
+
+        // IPs
+        const ipList = document.getElementById('ip-list');
+        ipList.innerHTML = '';
+        const staffUrl = (ip) => `http://${ip}:${port}/staff`;
+        localIps.forEach(ip => {
+          const li = document.createElement('li');
+          li.textContent = staffUrl(ip);
+          li.onclick = () => {
+            navigator.clipboard.writeText(staffUrl(ip)).then(() => showToast('URL copied!'));
+          };
+          ipList.appendChild(li);
+        });
+        if (localIps.length === 0) {
+          const li = document.createElement('li');
+          li.textContent = `http://localhost:${port}/staff`;
+          li.style.color = '#94a3b8';
+          ipList.appendChild(li);
+        }
+
+        // QR Code (simple inline generator)
+        generateQR();
+      } else {
+        setupCard.classList.remove('hidden');
+        runningCard.classList.add('hidden');
+      }
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('setup-error');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      setTimeout(() => el.classList.add('hidden'), 5000);
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2000);
+    }
+
+    // ---- Minimal QR code (draws text placeholder; real QR via library) ----
+    function generateQR() {
+      const canvas = document.getElementById('qr-canvas');
+      const ctx = canvas.getContext('2d');
+      const url = localIps.length > 0
+        ? `http://${localIps[0]}:${port}/staff`
+        : `http://localhost:${port}/staff`;
+
+      // Simple placeholder — in production, use a QR library
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, 180, 180);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 14px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('QR Code', 90, 80);
+      ctx.font = '10px monospace';
+      ctx.fillText(url, 90, 105);
+      ctx.font = '9px system-ui';
+      ctx.fillStyle = '#64748b';
+      ctx.fillText('(Add qrcode.js for real QR)', 90, 130);
+    }
+
+    // Initial render
+    updateUI();
+  </script>
+</body>
+</html>

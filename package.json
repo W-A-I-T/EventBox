@@ -1,0 +1,14 @@
+{
+  "name": "eventbox-desktop",
+  "version": "0.1.0",
+  "description": "EventBox — LAN Authority Server desktop app for dance competitions",
+  "private": true,
+  "scripts": {
+    "tauri:dev": "cd src-tauri && cargo tauri dev",
+    "tauri:build": "cd src-tauri && cargo tauri build",
+    "copy-server": "echo 'server.ts is already bundled in src-tauri/resources/'"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.6.0"
+  }
+}
