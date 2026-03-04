@@ -1,0 +1,70 @@
+{
+  "build": {
+    "distDir": "../src",
+    "devPath": "../src",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "package": {
+    "productName": "EventBox",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "bundle": {
+      "active": true,
+      "identifier": "app.danceflowcontrol.eventbox",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "targets": "all",
+      "windows": {
+        "wix": {
+          "language": "en-US"
+        }
+      },
+      "macOS": {
+        "minimumSystemVersion": "10.15"
+      },
+      "resources": [
+        "resources/eventbox-server*"
+      ]
+    },
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true,
+        "execute": false,
+        "sidecar": false
+      },
+      "process": {
+        "all": true,
+        "exit": true,
+        "relaunch": true
+      }
+    },
+    "windows": [
+      {
+        "title": "EventBox",
+        "width": 640,
+        "height": 520,
+        "resizable": true,
+        "minWidth": 480,
+        "minHeight": 400,
+        "center": true
+      }
+    ],
+    "systemTray": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false
+    },
+    "security": {
+      "csp": null
+    }
+  }
+}

@@ -1,0 +1,11 @@
+# Build artifacts
+src-tauri/target/
+src-tauri/resources/eventbox-server
+src-tauri/resources/eventbox-server.exe
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
