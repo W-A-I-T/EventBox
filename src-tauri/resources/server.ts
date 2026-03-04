@@ -873,14 +873,18 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
           );
           if (rows.length === 0) return json({ event_id: EVENT_ID, ref_data: null });
           const [tbl, dataJson, fetchedAt] = rows[0];
-          return json({ event_id: EVENT_ID, ref_data: { table_name: tbl, data: JSON.parse(String(dataJson)), fetched_at: fetchedAt } });
+          let parsedData: unknown;
+          try { parsedData = JSON.parse(String(dataJson)); } catch { parsedData = null; }
+          return json({ event_id: EVENT_ID, ref_data: { table_name: tbl, data: parsedData, fetched_at: fetchedAt } });
         }
         const rows = queryRows(
           `SELECT table_name, data_json, fetched_at FROM ref_data WHERE event_id=?`,
           [EVENT_ID],
-        ).map(([tbl, dataJson, fetchedAt]) => ({
-          table_name: tbl, data: JSON.parse(String(dataJson)), fetched_at: fetchedAt,
-        }));
+        ).map(([tbl, dataJson, fetchedAt]) => {
+          let parsedData: unknown;
+          try { parsedData = JSON.parse(String(dataJson)); } catch { parsedData = null; }
+          return { table_name: tbl, data: parsedData, fetched_at: fetchedAt };
+        });
         return json({ event_id: EVENT_ID, ref_data: rows });
       }
 
