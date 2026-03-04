@@ -548,7 +548,6 @@ const tokenRateLimit = new Map<string, number[]>();
 // ---------------------------------------------------------------------------
 // Role-based auth helper
 // ---------------------------------------------------------------------------
-const WRITE_ROLES = new Set(["event_admin", "chairman", "scrutineer"]);
 const ROLE_PERMISSIONS: Record<string, Set<string>> = {
   event_admin: new Set(["checkin", "marshal", "heat_state", "score", "score_submission", "scratch", "nowplaying", "result_publish", "chairman_override"]),
   chairman: new Set(["marshal", "heat_state", "nowplaying", "chairman_override"]),
