@@ -1,9 +1,9 @@
-name: Sync from ChasseFlow
+name: Sync from DanceFlowControl
 
 # Triggers:
 #   - Manual dispatch (with optional file filter)
 #   - Scheduled daily at 06:00 UTC
-#   - Repository dispatch (so ChasseFlow can trigger via API)
+#   - Repository dispatch (so DanceFlowControl can trigger via API)
 on:
   workflow_dispatch:
     inputs:
@@ -14,7 +14,7 @@ on:
   schedule:
     - cron: "0 6 * * *"
   repository_dispatch:
-    types: [chasseflow-sync]
+    types: [danceflow-sync]
 
 permissions:
   contents: write
@@ -31,11 +31,11 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Checkout ChasseFlow
+      - name: Checkout DanceFlowControl
         uses: actions/checkout@v4
         with:
-          repository: W-A-I-T/Chasseflow
-          path: _chasseflow
+          repository: W-A-I-T/dance-flow-control
+          path: _danceflow
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Sync shared files
@@ -44,12 +44,12 @@ jobs:
           set -euo pipefail
 
           # ---------------------------------------------------------------
-          # File mapping: ChasseFlow source → EventBox destination
+          # File mapping: DanceFlowControl source → EventBox destination
           # ---------------------------------------------------------------
           declare -A FILE_MAP
           FILE_MAP["public/eventbox/server.ts"]="src-tauri/resources/server.ts"
-          FILE_MAP["public/eventbox/main.rs"]="src-tauri/src/main.rs"
-          FILE_MAP["public/eventbox/dashboard.html"]="src/index.html"
+          FILE_MAP["desktop/src-tauri/src/main.rs"]="src-tauri/src/main.rs"
+          FILE_MAP["desktop/src/dashboard.html"]="src/index.html"
 
           # Optional filter from workflow_dispatch input
           FILTER="${{ github.event.inputs.files }}"
@@ -66,7 +66,7 @@ jobs:
               fi
             fi
 
-            SRC_PATH="_chasseflow/$src"
+            SRC_PATH="_danceflow/$src"
             if [ ! -f "$SRC_PATH" ]; then
               echo "Source not found: $SRC_PATH — skipping"
               continue
@@ -94,26 +94,26 @@ jobs:
             echo "EOF" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Clean up ChasseFlow checkout
-        run: rm -rf _chasseflow
+      - name: Clean up DanceFlowControl checkout
+        run: rm -rf _danceflow
 
       - name: Create sync PR
         if: steps.sync.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore: auto-sync shared files from ChasseFlow"
-          branch: auto/chasseflow-sync
+          commit-message: "chore: auto-sync shared files from DanceFlowControl"
+          branch: auto/danceflow-sync
           delete-branch: true
-          title: "chore: auto-sync shared files from ChasseFlow"
+          title: "chore: auto-sync shared files from DanceFlowControl"
           body: |
-            Automated sync of shared files from [ChasseFlow](https://github.com/W-A-I-T/Chasseflow).
+            Automated sync of shared files from [DanceFlowControl](https://github.com/W-A-I-T/dance-flow-control).
 
             **Changed files:**
             ```
             ${{ steps.sync.outputs.changed_files }}
             ```
 
-            > This PR was created automatically by the `sync-chasseflow` workflow.
-            > Review carefully before merging — ChasseFlow is the source of truth for these files.
+            > This PR was created automatically by the `sync-danceflow` workflow.
+            > Review carefully before merging — DanceFlowControl is the source of truth for these files.
           labels: sync,automated
