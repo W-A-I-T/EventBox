@@ -1,0 +1,18 @@
+{
+  "name": "eventbox-desktop",
+  "version": "0.1.0",
+  "description": "EventBox — LAN Authority Server desktop app for dance competitions",
+  "private": true,
+  "scripts": {
+    "compile-server": "deno compile --no-check --allow-net --allow-read --allow-write --allow-env --allow-ffi --unstable-ffi --output src-tauri/resources/eventbox-server src-tauri/resources/server.ts",
+    "compile-server:windows": "deno compile --no-check --allow-net --allow-read --allow-write --allow-env --allow-ffi --unstable-ffi --target x86_64-pc-windows-msvc --output src-tauri/resources/eventbox-server.exe src-tauri/resources/server.ts",
+    "compile-server:mac-intel": "deno compile --no-check --allow-net --allow-read --allow-write --allow-env --allow-ffi --unstable-ffi --target x86_64-apple-darwin --output src-tauri/resources/eventbox-server src-tauri/resources/server.ts",
+    "compile-server:mac-arm": "deno compile --no-check --allow-net --allow-read --allow-write --allow-env --allow-ffi --unstable-ffi --target aarch64-apple-darwin --output src-tauri/resources/eventbox-server src-tauri/resources/server.ts",
+    "compile-server:linux": "deno compile --no-check --allow-net --allow-read --allow-write --allow-env --allow-ffi --unstable-ffi --target x86_64-unknown-linux-gnu --output src-tauri/resources/eventbox-server src-tauri/resources/server.ts",
+    "tauri:dev": "npm run compile-server && cd src-tauri && cargo tauri dev",
+    "tauri:build": "npm run compile-server && cd src-tauri && cargo tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.6.0"
+  }
+}
