@@ -231,7 +231,7 @@
     }
 
     // ---- Actions ----
-    async function handleStart() {
+    function handleStart() {
       const input = document.getElementById('event-id-input');
       const id = input.value.trim();
       if (!id) {
@@ -240,27 +240,25 @@
       }
       eventId = id;
       if (isTauri) {
-        const btn = document.getElementById('start-btn');
-        btn.disabled = true;
-        btn.textContent = 'Starting…';
-        try {
-          await window.__TAURI__.invoke('set_event_id_and_start', { eventId: id });
-          // server-status event will update the UI
-          // Re-enable button in case server spawn failed (command still returns Ok)
-          btn.disabled = false;
-          btn.textContent = 'Start';
-        } catch (e) {
-          showError(e?.message || e || 'Failed to start server');
-          btn.disabled = false;
-          btn.textContent = 'Start';
-        }
+        const { invoke } = window.__TAURI__.tauri;
+        document.getElementById('start-btn').disabled = true;
+        document.getElementById('start-btn').textContent = 'Starting…';
+        invoke('set_event_id_and_start', { eventId: id })
+          .then(() => { /* server-status event will update UI */ })
+          .catch((err) => {
+            showError(String(err));
+            document.getElementById('start-btn').disabled = false;
+            document.getElementById('start-btn').textContent = 'Start';
+          });
+      } else {
+        showError('This UI requires the EventBox desktop app.');
       }
     }
 
     function handleStop() {
-      // Tauri tray handles this, but we can also trigger from UI
-      if (isTauri && window.__TAURI__.process) {
-        // The tray "stop" menu item handles this
+      if (isTauri) {
+        const { invoke } = window.__TAURI__.tauri;
+        invoke('stop_server_cmd').catch(() => {});
       }
       serverRunning = false;
       updateUI();
@@ -325,26 +323,46 @@
       setTimeout(() => t.classList.remove('show'), 2000);
     }
 
-    // ---- Minimal QR code (draws text placeholder; real QR via library) ----
     function generateQR() {
       const canvas = document.getElementById('qr-canvas');
-      const ctx = canvas.getContext('2d');
       const url = localIps.length > 0
-        ? `http://${localIps[0]}:${port}/staff`
-        : `http://localhost:${port}/staff`;
+        ? `http://${localIps[0]}:${port}/staff?join=${roomCode}`
+        : `http://localhost:${port}/staff?join=${roomCode}`;
 
-      // Simple placeholder — in production, use a QR library
+      // Try loading qrcode lib from CDN
+      if (window.qrcode) {
+        drawRealQR(url);
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
+      s.onload = function() { drawRealQR(url); };
+      s.onerror = function() { drawFallbackQR(canvas, url); };
+      document.head.appendChild(s);
+    }
+
+    function drawRealQR(url) {
+      const container = document.getElementById('qr-container');
+      const qr = qrcode(0, 'L');
+      qr.addData(url);
+      qr.make();
+      container.innerHTML = qr.createImgTag(5, 8);
+    }
+
+    function drawFallbackQR(canvas, url) {
+      const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, 180, 180);
       ctx.fillStyle = '#0f172a';
       ctx.font = 'bold 14px system-ui';
       ctx.textAlign = 'center';
-      ctx.fillText('QR Code', 90, 80);
-      ctx.font = '10px monospace';
-      ctx.fillText(url, 90, 105);
+      ctx.fillText('Room Code:', 90, 70);
+      ctx.font = 'bold 28px monospace';
+      ctx.fillText(roomCode, 90, 105);
       ctx.font = '9px system-ui';
       ctx.fillStyle = '#64748b';
-      ctx.fillText('(Add qrcode.js for real QR)', 90, 130);
+      ctx.fillText(url, 90, 130);
+      ctx.fillText('(QR unavailable offline)', 90, 150);
     }
 
     // Initial render
