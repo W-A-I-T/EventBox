@@ -246,6 +246,9 @@
         try {
           await window.__TAURI__.invoke('set_event_id_and_start', { eventId: id });
           // server-status event will update the UI
+          // Re-enable button in case server spawn failed (command still returns Ok)
+          btn.disabled = false;
+          btn.textContent = 'Start';
         } catch (e) {
           showError(e?.message || e || 'Failed to start server');
           btn.disabled = false;
