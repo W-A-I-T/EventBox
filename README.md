@@ -8,14 +8,12 @@ No terminal. No dependencies. Just download, install, and go.
 
 ## Download & Install
 
-Go to the [Releases](https://github.com/W-A-I-T/EventBox/releases) page and download the installer for your platform:
-
-| Platform | File | How to Install |
-|----------|------|----------------|
-| **Windows** | `EventBox_x.x.x_x64_en-US.msi` | Double-click the `.msi` file |
-| **macOS** | `EventBox_x.x.x_aarch64.dmg` | Open the `.dmg`, drag EventBox to Applications |
-| **Linux** | `event-box_x.x.x_amd64.deb` | `sudo dpkg -i event-box_*.deb` or double-click |
-| **Linux** | `event-box_x.x.x_amd64.AppImage` | Right-click > Properties > Permissions > Allow executing, then double-click |
+| Platform | Download | How to Install |
+|----------|----------|----------------|
+| **Windows** | [EventBox-Windows.msi](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Windows.msi) | Double-click the `.msi` file |
+| **macOS** | [EventBox-Mac.dmg](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Mac.dmg) | Open the `.dmg`, drag EventBox to Applications |
+| **Linux (.deb)** | [EventBox-Linux.deb](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Linux.deb) | `sudo dpkg -i EventBox-Linux.deb` or double-click |
+| **Linux (AppImage)** | [EventBox-Linux.AppImage](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Linux.AppImage) | Right-click → Properties → Permissions → Allow executing, then double-click |
 
 > **Everything is bundled.** No Deno, no Rust, no Node.js needed on the user's machine.
 
@@ -143,7 +141,7 @@ EventBox/
 │       ├── server.ts           # EventBox LAN server source
 │       └── eventbox-server*    # Compiled server binary (built during build)
 ├── src/
-│   └── dashboard.html          # Dashboard UI (room code, QR, IPs, controls)
+│   └── index.html               # Dashboard UI (room code, QR, IPs, controls)
 ├── package.json                # Build scripts
 ├── .gitignore
 ├── LICENSE                     # GPL-3.0
