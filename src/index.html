@@ -231,7 +231,7 @@
     }
 
     // ---- Actions ----
-    function handleStart() {
+    async function handleStart() {
       const input = document.getElementById('event-id-input');
       const id = input.value.trim();
       if (!id) {
@@ -240,9 +240,17 @@
       }
       eventId = id;
       if (isTauri) {
-        // In Tauri, the setup auto-starts. For manual start, we'd use a command.
-        // For now, show "restart required" since event ID is set at launch
-        showError('Set event ID before launching the app, or restart with: --event-id ' + id);
+        const btn = document.getElementById('start-btn');
+        btn.disabled = true;
+        btn.textContent = 'Starting…';
+        try {
+          await window.__TAURI__.invoke('set_event_id_and_start', { eventId: id });
+          // server-status event will update the UI
+        } catch (e) {
+          showError(e?.message || e || 'Failed to start server');
+          btn.disabled = false;
+          btn.textContent = 'Start';
+        }
       }
     }
 

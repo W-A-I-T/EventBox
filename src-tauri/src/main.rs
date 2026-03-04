@@ -137,6 +137,33 @@ fn stop_server(state: &Arc<Mutex<ServerState>>, app: &tauri::AppHandle) {
     }));
 }
 
+#[tauri::command]
+fn set_event_id_and_start(
+    event_id: String,
+    state: tauri::State<'_, Arc<Mutex<ServerState>>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if event_id.trim().is_empty() {
+        return Err("Event ID cannot be empty".into());
+    }
+
+    // Update the event_id in state
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        // Stop existing server if running
+        if let Some(mut child) = s.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        s.room_code = None;
+        s.event_id = event_id.trim().to_string();
+    }
+
+    // Start the server with the new event_id
+    start_server(&state.inner().clone(), &app);
+    Ok(())
+}
+
 fn get_local_ips() -> Vec<String> {
     let mut ips = Vec::new();
     if let Ok(ip) = local_ip_address::local_ip() {
@@ -189,6 +216,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(server_state)
+        .invoke_handler(tauri::generate_handler![set_event_id_and_start])
         .system_tray(build_tray())
         .on_system_tray_event(move |app, event| {
             if let SystemTrayEvent::MenuItemClick { id, .. } = event {
