@@ -198,11 +198,12 @@
   <script>
     // ---- State ----
     let serverRunning = false;
+    let starting = false;
+    let startTimeout = null;
     let roomCode = '';
     let port = 8787;
     let localIps = [];
     let eventId = '';
-    let starting = false;
 
     // ---- Tauri event listeners ----
     // Check if running inside Tauri
@@ -214,6 +215,7 @@
       listen('server-status', (e) => {
         const d = e.payload;
         starting = false;
+        if (startTimeout) { clearTimeout(startTimeout); startTimeout = null; }
         serverRunning = !!d.running;
         if (d.room_code) roomCode = d.room_code;
         if (d.port) port = d.port;
@@ -240,27 +242,26 @@
         showError('Please enter an Event ID');
         return;
       }
+      roomCode = '';
       eventId = id;
-      roomCode = '';  // Clear stale room code before restarting
       if (isTauri) {
         const { invoke } = window.__TAURI__.tauri;
-        const btn = document.getElementById('start-btn');
         starting = true;
-        btn.disabled = true;
-        btn.textContent = 'Starting…';
+        updateUI();
         invoke('set_event_id_and_start', { eventId: id })
           .then(() => {
-            // The command resolves when the process spawns.
-            // If the server crashes before emitting a room code, we must re-enable the UI.
-            starting = false;
-            btn.disabled = false;
-            btn.textContent = 'Start';
+            startTimeout = setTimeout(() => {
+              if (starting) {
+                starting = false;
+                showError('Server did not respond in time. It may have crashed.');
+                updateUI();
+              }
+            }, 10000);
           })
           .catch((err) => {
             starting = false;
             showError(String(err));
-            btn.disabled = false;
-            btn.textContent = 'Start';
+            updateUI();
           });
       } else {
         showError('This UI requires the EventBox desktop app.');
@@ -285,6 +286,11 @@
     function updateUI() {
       const setupCard = document.getElementById('setup-card');
       const runningCard = document.getElementById('running-card');
+      const startBtn = document.getElementById('start-btn');
+      if (startBtn) {
+        startBtn.disabled = starting;
+        startBtn.textContent = starting ? 'Starting…' : 'Start';
+      }
 
       if (serverRunning && roomCode) {
         setupCard.classList.add('hidden');
@@ -318,12 +324,6 @@
       } else {
         setupCard.classList.remove('hidden');
         runningCard.classList.add('hidden');
-
-        const btn = document.getElementById('start-btn');
-        if (btn) {
-          btn.disabled = starting;
-          btn.textContent = starting ? 'Starting…' : 'Start';
-        }
       }
     }
 
