@@ -241,6 +241,7 @@
         return;
       }
       eventId = id;
+      roomCode = '';  // Clear stale room code before restarting
       if (isTauri) {
         const { invoke } = window.__TAURI__.tauri;
         const btn = document.getElementById('start-btn');
