@@ -1,0 +1,119 @@
+name: Sync from DanceFlowControl
+
+# Triggers:
+#   - Manual dispatch (with optional file filter)
+#   - Scheduled daily at 06:00 UTC
+#   - Repository dispatch (so DanceFlowControl can trigger via API)
+on:
+  workflow_dispatch:
+    inputs:
+      files:
+        description: "Comma-separated list of files to sync (leave blank for all)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 6 * * *"
+  repository_dispatch:
+    types: [danceflow-sync]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout EventBox
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Checkout DanceFlowControl
+        uses: actions/checkout@v4
+        with:
+          repository: W-A-I-T/dance-flow-control
+          path: _danceflow
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync shared files
+        id: sync
+        run: |
+          set -euo pipefail
+
+          # ---------------------------------------------------------------
+          # File mapping: DanceFlowControl source → EventBox destination
+          # ---------------------------------------------------------------
+          declare -A FILE_MAP
+          FILE_MAP["public/eventbox/server.ts"]="src-tauri/resources/server.ts"
+          FILE_MAP["desktop/src-tauri/src/main.rs"]="src-tauri/src/main.rs"
+          FILE_MAP["desktop/src/dashboard.html"]="src/index.html"
+
+          # Optional filter from workflow_dispatch input
+          FILTER="${{ github.event.inputs.files }}"
+
+          CHANGED=""
+          for src in "${!FILE_MAP[@]}"; do
+            dst="${FILE_MAP[$src]}"
+
+            # If filter is set, skip files not in the filter list
+            if [ -n "$FILTER" ]; then
+              if ! echo "$FILTER" | grep -q "$(basename "$src")"; then
+                echo "Skipping $src (not in filter)"
+                continue
+              fi
+            fi
+
+            SRC_PATH="_danceflow/$src"
+            if [ ! -f "$SRC_PATH" ]; then
+              echo "Source not found: $SRC_PATH — skipping"
+              continue
+            fi
+
+            # Only copy if content differs
+            if [ -f "$dst" ] && diff -q "$SRC_PATH" "$dst" > /dev/null 2>&1; then
+              echo "No changes: $src → $dst"
+            else
+              echo "Syncing: $src → $dst"
+              mkdir -p "$(dirname "$dst")"
+              cp "$SRC_PATH" "$dst"
+              CHANGED="${CHANGED}${src}\n"
+            fi
+          done
+
+          if [ -z "$CHANGED" ]; then
+            echo "No files changed — nothing to sync."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo -e "Changed files:\n$CHANGED"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed_files<<EOF" >> "$GITHUB_OUTPUT"
+            echo -e "$CHANGED" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clean up DanceFlowControl checkout
+        run: rm -rf _danceflow
+
+      - name: Create sync PR
+        if: steps.sync.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: auto-sync shared files from DanceFlowControl"
+          branch: auto/danceflow-sync
+          delete-branch: true
+          title: "chore: auto-sync shared files from DanceFlowControl"
+          body: |
+            Automated sync of shared files from [DanceFlowControl](https://github.com/W-A-I-T/dance-flow-control).
+
+            **Changed files:**
+            ```
+            ${{ steps.sync.outputs.changed_files }}
+            ```
+
+            > This PR was created automatically by the `sync-danceflow` workflow.
+            > Review carefully before merging — DanceFlowControl is the source of truth for these files.
+          labels: sync,automated
