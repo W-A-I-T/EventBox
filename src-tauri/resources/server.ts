@@ -183,7 +183,8 @@ function queryRows(sql: string, params: unknown[] = []): unknown[][] {
   const stmt = db.prepare(sql);
   const rows: unknown[][] = [];
   for (const row of stmt.iter(...params)) {
-    rows.push(row as unknown[]);
+    // stmt.iter() returns objects with named columns; convert to value arrays
+    rows.push(Object.values(row as Record<string, unknown>));
   }
   return rows;
 }
