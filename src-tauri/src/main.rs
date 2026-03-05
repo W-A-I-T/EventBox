@@ -30,10 +30,10 @@ fn build_tray() -> SystemTray {
     SystemTray::new().with_menu(menu)
 }
 
-fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
+fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<(), String> {
     let mut s = state.lock().unwrap();
     if s.child.is_some() {
-        return; // already running
+        return Ok(()); // already running
     }
 
     // Resolve bundled server.ts
@@ -108,13 +108,17 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
                 "port": port,
                 "event_id": event_id,
             }));
+
+            Ok(())
         }
         Err(e) => {
+            let error_msg = format!("Failed to start: {}. Is Deno installed?", e);
             eprintln!("Failed to start Deno server: {}", e);
             let _ = app.emit_all("server-status", serde_json::json!({
                 "running": false,
-                "error": format!("Failed to start: {}. Is Deno installed?", e),
+                "error": &error_msg,
             }));
+            Err(error_msg)
         }
     }
 }
@@ -196,7 +200,7 @@ fn main() {
             if let SystemTrayEvent::MenuItemClick { id, .. } = event {
                 let state = app.state::<Mutex<ServerState>>();
                 match id.as_str() {
-                    "start" => start_server(&state, app),
+                    "start" => { let _ = start_server(&state, app); }
                     "stop" => stop_server(&state, app),
                     "quit" => {
                         stop_server(&state, app);
@@ -215,7 +219,7 @@ fn main() {
                 let s = state.lock().unwrap();
                 if !s.event_id.is_empty() {
                     drop(s);
-                    start_server(&state, &handle);
+                    let _ = start_server(&state, &handle);
                 }
             }
             Ok(())
@@ -248,7 +252,7 @@ fn set_event_id_and_start(
             s.port = p;
         }
     }
-    start_server(&state, &app_handle);
+    start_server(&state, &app_handle)?;
     Ok(())
 }
 
