@@ -551,10 +551,11 @@ function applyOp(op: Op): ApplyResult {
       break;
   }
 
-  // 3. Broadcast to all connected peers
+  db.exec("COMMIT");
+
+  // 3. Broadcast to all connected peers (after commit so DB is consistent)
   broadcastToEvent(op.event_id, { type: "op.applied", op });
 
-  db.exec("COMMIT");
   return { accepted: true };
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
@@ -1856,7 +1857,7 @@ setInterval(loadData,10000);
     };
     const role = appRoleMap[url.pathname] || "marshal";
     const eventId = url.searchParams.get("eventId") || EVENT_ID;
-    const localUrl = `${url.origin}/portal?role=${encodeURIComponent(role)}&eventId=${eventId}`;
+    const localUrl = `${url.origin}/portal?role=${encodeURIComponent(role)}&eventId=${encodeURIComponent(eventId)}`;
     const pwaBase = "https://dance-flow-control.lovable.app";
     const pwaUrl = pwaBase + url.pathname + url.search + (url.search ? "&" : "?") + "eventbox=" + encodeURIComponent(url.origin);
     const html = `<!DOCTYPE html>
