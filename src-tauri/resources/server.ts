@@ -28,14 +28,14 @@ const DB_PATH = Deno.env.get("EVENTBOX_DB") ?? "./eventbox.sqlite";
 const ROOM_CODE =
   Deno.env.get("EVENTBOX_ROOM_CODE") ??
   String(Math.floor(100000 + Math.random() * 900000));
+const ADMIN_SECRET =
+  Deno.env.get("EVENTBOX_ADMIN_SECRET") ??
+  ROOM_CODE;
 const EVENT_ID = Deno.env.get("EVENTBOX_EVENT_ID") ?? "";
 const SECRET =
   Deno.env.get("EVENTBOX_SECRET") ??
   crypto.randomUUID().replace(/-/g, "");
 
-const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
-
-// HTML escape helper — prevents XSS in server-rendered templates
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -44,6 +44,8 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 if (!EVENT_ID) {
   console.error("ERROR: EVENTBOX_EVENT_ID is required. Pass it via env or --event-id flag.");
@@ -183,7 +185,6 @@ function queryRows(sql: string, params: unknown[] = []): unknown[][] {
   const stmt = db.prepare(sql);
   const rows: unknown[][] = [];
   for (const row of stmt.iter(...params)) {
-    // stmt.iter() returns objects with named columns; convert to value arrays
     rows.push(Object.values(row as Record<string, unknown>));
   }
   return rows;
@@ -367,199 +368,199 @@ function applyOp(op: Op): ApplyResult {
 
   const now = Date.now();
 
-  // Wrap entire op application in a transaction for atomicity.
-  // If FSM rejects, the op log INSERT is rolled back too.
+  // Wrap in transaction for data integrity
   db.exec("BEGIN");
   try {
-    // 1. Idempotent insert into op log
-    try {
-      queryRun(
-        `INSERT INTO ops(op_id,event_id,actor_device_id,actor_role,op_type,entity_type,entity_id,payload_json,created_at_ms,received_at_ms)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        [
-          op.op_id, op.event_id, op.actor_device_id ?? null,
-          op.actor_role ?? null, op.op_type, op.entity_type ?? null,
-          op.entity_id ?? null, JSON.stringify(op.payload ?? {}),
-          op.created_at_ms, now,
-        ],
-      );
-    } catch {
-      db.exec("ROLLBACK");
-      return { accepted: false, reason: "duplicate" };
-    }
 
-    // 2. Reduce into materialized state
-    const p = op.payload as Record<string, unknown>;
-
-    switch (op.op_type) {
-      case "checkin": {
-        if (p?.credential_id && p?.status) {
-          queryRun(
-            `INSERT INTO checkins(event_id,credential_id,status,device_id,updated_at_ms)
-             VALUES (?,?,?,?,?)
-             ON CONFLICT(event_id,credential_id) DO UPDATE SET
-               status=excluded.status, device_id=excluded.device_id, updated_at_ms=excluded.updated_at_ms`,
-            [op.event_id, p.credential_id, p.status, op.actor_device_id ?? null, now],
-          );
-        }
-        break;
-      }
-
-      case "marshal": {
-        if (p?.heat_entry_id && p?.status) {
-          const rows = queryRows(
-            `SELECT status FROM marshal_status WHERE event_id=? AND heat_entry_id=?`,
-            [op.event_id, p.heat_entry_id],
-          );
-          const currentState = rows.length > 0 ? String(rows[0][0]) : null;
-
-          if (!isFsmAllowed(currentState, p.status as string)) {
-            db.exec("ROLLBACK");
-            return { accepted: false, reason: "fsm_rejected" };
-          }
-
-          queryRun(
-            `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
-             VALUES (?,?,?,?,?)
-             ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
-               status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-            [op.event_id, p.heat_entry_id, p.status, op.actor_device_id ?? null, now],
-          );
-        }
-        break;
-      }
-
-      case "heat_state": {
-        if (p?.heat_id && p?.status) {
-          const rows = queryRows(
-            `SELECT status FROM heat_status WHERE event_id=? AND heat_id=?`,
-            [op.event_id, p.heat_id],
-          );
-          const currentState = rows.length > 0 ? String(rows[0][0]) : null;
-
-          if (!isFsmAllowed(currentState, p.status as string)) {
-            db.exec("ROLLBACK");
-            return { accepted: false, reason: "fsm_rejected" };
-          }
-
-          queryRun(
-            `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
-             VALUES (?,?,?,?,?)
-             ON CONFLICT(event_id,heat_id) DO UPDATE SET
-               status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-            [op.event_id, p.heat_id, p.status, op.actor_device_id ?? null, now],
-          );
-        }
-        break;
-      }
-
-      case "score": {
-        if (p?.heat_id && p?.dance_code && p?.judge_assignment_id && p?.heat_entry_id) {
-          queryRun(
-            `INSERT INTO judge_marks(event_id,heat_id,dance_code,judge_assignment_id,heat_entry_id,mark_type,mark_value,updated_at_ms)
-             VALUES (?,?,?,?,?,?,?,?)
-             ON CONFLICT(event_id,heat_id,dance_code,judge_assignment_id,heat_entry_id) DO UPDATE SET
-               mark_type=excluded.mark_type, mark_value=excluded.mark_value, updated_at_ms=excluded.updated_at_ms`,
-            [op.event_id, p.heat_id, p.dance_code, p.judge_assignment_id, p.heat_entry_id, p.mark_type ?? "ordinal", JSON.stringify(p.mark_value), now],
-          );
-        }
-        break;
-      }
-
-      case "score_submission": {
-        if (p?.heat_id && p?.dance_code && p?.judge_assignment_id) {
-          queryRun(
-            `INSERT INTO judge_submissions(event_id,heat_id,dance_code,judge_assignment_id,submitted_at_ms)
-             VALUES (?,?,?,?,?)
-             ON CONFLICT(event_id,heat_id,dance_code,judge_assignment_id) DO UPDATE SET
-               submitted_at_ms=excluded.submitted_at_ms`,
-            [op.event_id, p.heat_id, p.dance_code, p.judge_assignment_id, now],
-          );
-        }
-        break;
-      }
-
-      case "scratch": {
-        if (p?.heat_entry_id) {
-          queryRun(
-            `INSERT INTO scratches(event_id,heat_entry_id,reason,requested_by,requested_at)
-             VALUES (?,?,?,?,?)
-             ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
-               reason=excluded.reason, requested_by=excluded.requested_by, requested_at=excluded.requested_at`,
-            [op.event_id, p.heat_entry_id, p.reason ?? null, p.requested_by ?? null, p.requested_at ?? new Date(now).toISOString()],
-          );
-
-          queryRun(
-            `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
-             VALUES (?,?,?,?,?)
-             ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
-               status='cancelled', updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-            [op.event_id, p.heat_entry_id, "cancelled", op.actor_device_id ?? null, now],
-          );
-        }
-        break;
-      }
-
-      case "nowplaying": {
-        queryRun(
-          `INSERT INTO now_playing(event_id,heat_id,heat_number,division_name,dance_code,status,updated_at_ms)
-           VALUES (?,?,?,?,?,?,?)
-           ON CONFLICT(event_id) DO UPDATE SET
-             heat_id=excluded.heat_id, heat_number=excluded.heat_number,
-             division_name=excluded.division_name, dance_code=excluded.dance_code,
-             status=excluded.status, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.heat_id ?? null, p.heat_number ?? null, p.division_name ?? null, p.dance_code ?? null, p.status ?? "playing", now],
-        );
-        break;
-      }
-
-      case "result_publish": {
-        if (p?.heat_id && p?.placements) {
-          queryRun(
-            `INSERT INTO published_results(event_id,heat_id,result_json,published_by,published_at_ms)
-             VALUES (?,?,?,?,?)
-             ON CONFLICT(event_id,heat_id) DO UPDATE SET
-               result_json=excluded.result_json, published_by=excluded.published_by, published_at_ms=excluded.published_at_ms`,
-            [op.event_id, p.heat_id, JSON.stringify(p.placements), op.actor_device_id ?? null, now],
-          );
-        }
-        break;
-      }
-
-      case "chairman_override": {
-        if (p?.heat_id && p?.action) {
-          const stateMap: Record<string, string> = {
-            skip: "cancelled",
-            recall: "on_floor",
-            restart: "scheduled",
-            complete: "completed",
-          };
-          const newStatus = stateMap[p.action as string] ?? (p.action as string);
-          queryRun(
-            `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
-             VALUES (?,?,?,?,?)
-             ON CONFLICT(event_id,heat_id) DO UPDATE SET
-               status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-            [op.event_id, p.heat_id, newStatus, op.actor_device_id ?? null, now],
-          );
-        }
-        break;
-      }
-
-      default:
-        break;
-    }
-
-    db.exec("COMMIT");
-  } catch (e) {
+  // 1. Idempotent insert into op log
+  try {
+    queryRun(
+      `INSERT INTO ops(op_id,event_id,actor_device_id,actor_role,op_type,entity_type,entity_id,payload_json,created_at_ms,received_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [
+        op.op_id, op.event_id, op.actor_device_id ?? null,
+        op.actor_role ?? null, op.op_type, op.entity_type ?? null,
+        op.entity_id ?? null, JSON.stringify(op.payload ?? {}),
+        op.created_at_ms, now,
+      ],
+    );
+  } catch {
     db.exec("ROLLBACK");
-    throw e;
+    return { accepted: false, reason: "duplicate" };
+  }
+
+  // 2. Reduce into materialized state
+  const p = op.payload as Record<string, unknown>;
+
+  switch (op.op_type) {
+    case "checkin": {
+      if (p?.credential_id && p?.status) {
+        queryRun(
+          `INSERT INTO checkins(event_id,credential_id,status,device_id,updated_at_ms)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(event_id,credential_id) DO UPDATE SET
+             status=excluded.status, device_id=excluded.device_id, updated_at_ms=excluded.updated_at_ms`,
+          [op.event_id, p.credential_id, p.status, op.actor_device_id ?? null, now],
+        );
+      }
+      break;
+    }
+
+    case "marshal": {
+      if (p?.heat_entry_id && p?.status) {
+        const rows = queryRows(
+          `SELECT status FROM marshal_status WHERE event_id=? AND heat_entry_id=?`,
+          [op.event_id, p.heat_entry_id],
+        );
+        const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+
+        if (!isFsmAllowed(currentState, p.status as string)) {
+          db.exec("ROLLBACK");
+          return { accepted: false, reason: "fsm_rejected" };
+        }
+
+        queryRun(
+          `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
+             status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+          [op.event_id, p.heat_entry_id, p.status, op.actor_device_id ?? null, now],
+        );
+      }
+      break;
+    }
+
+    case "heat_state": {
+      if (p?.heat_id && p?.status) {
+        const rows = queryRows(
+          `SELECT status FROM heat_status WHERE event_id=? AND heat_id=?`,
+          [op.event_id, p.heat_id],
+        );
+        const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+
+        if (!isFsmAllowed(currentState, p.status as string)) {
+          db.exec("ROLLBACK");
+          return { accepted: false, reason: "fsm_rejected" };
+        }
+
+        queryRun(
+          `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(event_id,heat_id) DO UPDATE SET
+             status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+          [op.event_id, p.heat_id, p.status, op.actor_device_id ?? null, now],
+        );
+      }
+      break;
+    }
+
+    case "score": {
+      if (p?.heat_id && p?.dance_code && p?.judge_assignment_id && p?.heat_entry_id) {
+        queryRun(
+          `INSERT INTO judge_marks(event_id,heat_id,dance_code,judge_assignment_id,heat_entry_id,mark_type,mark_value,updated_at_ms)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(event_id,heat_id,dance_code,judge_assignment_id,heat_entry_id) DO UPDATE SET
+             mark_type=excluded.mark_type, mark_value=excluded.mark_value, updated_at_ms=excluded.updated_at_ms`,
+          [op.event_id, p.heat_id, p.dance_code, p.judge_assignment_id, p.heat_entry_id, p.mark_type ?? "ordinal", JSON.stringify(p.mark_value), now],
+        );
+      }
+      break;
+    }
+
+    case "score_submission": {
+      if (p?.heat_id && p?.dance_code && p?.judge_assignment_id) {
+        queryRun(
+          `INSERT INTO judge_submissions(event_id,heat_id,dance_code,judge_assignment_id,submitted_at_ms)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(event_id,heat_id,dance_code,judge_assignment_id) DO UPDATE SET
+             submitted_at_ms=excluded.submitted_at_ms`,
+          [op.event_id, p.heat_id, p.dance_code, p.judge_assignment_id, now],
+        );
+      }
+      break;
+    }
+
+    case "scratch": {
+      if (p?.heat_entry_id) {
+        queryRun(
+          `INSERT INTO scratches(event_id,heat_entry_id,reason,requested_by,requested_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
+             reason=excluded.reason, requested_by=excluded.requested_by, requested_at=excluded.requested_at`,
+          [op.event_id, p.heat_entry_id, p.reason ?? null, p.requested_by ?? null, p.requested_at ?? new Date(now).toISOString()],
+        );
+
+        queryRun(
+          `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
+             status='cancelled', updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+          [op.event_id, p.heat_entry_id, "cancelled", op.actor_device_id ?? null, now],
+        );
+      }
+      break;
+    }
+
+    case "nowplaying": {
+      queryRun(
+        `INSERT INTO now_playing(event_id,heat_id,heat_number,division_name,dance_code,status,updated_at_ms)
+         VALUES (?,?,?,?,?,?,?)
+         ON CONFLICT(event_id) DO UPDATE SET
+           heat_id=excluded.heat_id, heat_number=excluded.heat_number,
+           division_name=excluded.division_name, dance_code=excluded.dance_code,
+           status=excluded.status, updated_at_ms=excluded.updated_at_ms`,
+        [op.event_id, p.heat_id ?? null, p.heat_number ?? null, p.division_name ?? null, p.dance_code ?? null, p.status ?? "playing", now],
+      );
+      break;
+    }
+
+    case "result_publish": {
+      if (p?.heat_id && p?.placements) {
+        queryRun(
+          `INSERT INTO published_results(event_id,heat_id,result_json,published_by,published_at_ms)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(event_id,heat_id) DO UPDATE SET
+             result_json=excluded.result_json, published_by=excluded.published_by, published_at_ms=excluded.published_at_ms`,
+          [op.event_id, p.heat_id, JSON.stringify(p.placements), op.actor_device_id ?? null, now],
+        );
+      }
+      break;
+    }
+
+    case "chairman_override": {
+      if (p?.heat_id && p?.action) {
+        const stateMap: Record<string, string> = {
+          skip: "cancelled",
+          recall: "on_floor",
+          restart: "scheduled",
+          complete: "completed",
+        };
+        const newStatus = stateMap[p.action as string] ?? (p.action as string);
+        queryRun(
+          `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(event_id,heat_id) DO UPDATE SET
+             status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+          [op.event_id, p.heat_id, newStatus, op.actor_device_id ?? null, now],
+        );
+      }
+      break;
+    }
+
+    default:
+      break;
   }
 
   // 3. Broadcast to all connected peers
   broadcastToEvent(op.event_id, { type: "op.applied", op });
 
+  db.exec("COMMIT");
   return { accepted: true };
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    console.error("[EventBox] applyOp error:", e);
+    return { accepted: false, reason: "invalid" };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -642,11 +643,11 @@ a{color:#818cf8}hr{border:none;border-top:1px solid #334155;margin:1.5rem 0}
 <p style="color:#94a3b8;font-size:.85rem;margin-top:.25rem">LAN Authority Server v0.4</p>
 <div class="info">
 <span class="label">Event ID:</span> <span class="val">${escapeHtml(EVENT_ID)}</span><br>
-<span class="label">Port:</span> <span class="val">${PORT}</span><br>
+<span class="label">Port:</span> <span class="val">${escapeHtml(String(PORT))}</span><br>
 <span class="label">Database:</span> <span class="val">${escapeHtml(DB_PATH)}</span>
 </div>
 <p style="color:#94a3b8;font-size:.85rem">Room Code — share this with staff:</p>
-<div class="code" style="cursor:pointer" onclick='navigator.clipboard.writeText(${JSON.stringify(ROOM_CODE)})' title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
+<div class="code" style="cursor:pointer" onclick="navigator.clipboard.writeText(${JSON.stringify(ROOM_CODE)})" title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
 <div id="qr-root" style="display:flex;justify-content:center;padding:1rem;background:#fff;border-radius:8px;margin:1rem 0"></div>
 <p class="hint">Staff scan the QR code or enter the Room Code at <strong>/staff</strong> to connect.</p>
 <hr>
@@ -655,7 +656,7 @@ a{color:#818cf8}hr{border:none;border-top:1px solid #334155;margin:1.5rem 0}
 <a href="/staff">Staff Join</a>
 <a href="/admin">Admin Panel</a>
 </div>
-<p class="hint" style="margin-top:1.5rem">📱 Staff devices should be on the same Wi-Fi. They connect via this machine's local IP on port ${PORT}.</p>
+<p class="hint" style="margin-top:1.5rem">📱 Staff devices should be on the same Wi-Fi. They connect via this machine's local IP on port ${escapeHtml(String(PORT))}.</p>
 <script>
 // Minimal QR Code generator (numeric mode, version 2, ECC-L)
 (function(){
@@ -722,7 +723,7 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
 <span class="label">Event ID:</span> <span class="val">${escapeHtml(EVENT_ID)}</span><br>
 <span class="label">Version:</span> <span class="val">0.4.0</span><br>
 <span class="label">Time:</span> <span class="val">${new Date().toISOString()}</span><br>
-<span class="label">Port:</span> <span class="val">${PORT}</span>
+<span class="label">Port:</span> <span class="val">${escapeHtml(String(PORT))}</span>
 </div>
 <a class="back" href="/">← Back to Dashboard</a>
 </div></body></html>`;
@@ -756,8 +757,36 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
       return json({ ok: false, error: "invalid_room_code" }, 401);
     }
     const deviceId = body.device_id ?? crypto.randomUUID();
-    const role = body.role ?? "event_admin";
-    const token = await issueToken(deviceId, role);
+
+    // Derive role securely — never trust client-supplied role
+    let role = "viewer";
+    let staffSessionId: string | undefined;
+
+    if (body.staff_session_id) {
+      // Look up role from staff_sessions table
+      const sessionRows = queryRows(
+        `SELECT id, role, revoked_at, expires_at FROM staff_sessions WHERE id=? AND event_id=?`,
+        [body.staff_session_id, EVENT_ID],
+      );
+      if (sessionRows.length === 0) {
+        return json({ ok: false, error: "invalid_staff_session" }, 401);
+      }
+      const [id, sessionRole, revokedAt, expiresAt] = sessionRows[0];
+      if (revokedAt) {
+        return json({ ok: false, error: "session_revoked" }, 401);
+      }
+      if (Number(expiresAt) < Date.now()) {
+        return json({ ok: false, error: "session_expired" }, 401);
+      }
+      role = String(sessionRole);
+      staffSessionId = String(id);
+    } else if (body.admin_secret && body.admin_secret === ADMIN_SECRET) {
+      // Admin dashboard auth via shared secret
+      role = "event_admin";
+    }
+    // Otherwise: role stays "viewer" (read-only, no write permissions)
+
+    const token = await issueToken(deviceId, role, staffSessionId);
     return json({
       ok: true,
       token,
@@ -1357,13 +1386,13 @@ select:focus,input[type=text]:focus{border-color:#6366f1}
 
 <div class="card">
 <p class="label">Room Code — staff enter this to connect</p>
-<div class="room-code" onclick='copy(${JSON.stringify(ROOM_CODE)})' title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
+<div class="room-code" onclick="copy(${JSON.stringify(ROOM_CODE)})" title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
 <div class="qr-wrap" id="qr-admin"></div>
 </div>
 
 <div class="card">
 <p class="label">Event ID</p>
-<div class="event-id" onclick='copy(${JSON.stringify(EVENT_ID)})' title="Click to copy">${escapeHtml(EVENT_ID)}</div>
+<div class="event-id" onclick="copy(${JSON.stringify(EVENT_ID)})" title="Click to copy">${escapeHtml(EVENT_ID)}</div>
 </div>
 
 <div class="card" id="auth-card">
@@ -1427,7 +1456,7 @@ async function authAdmin(){
   const did=localStorage.getItem('device_id')||crypto.randomUUID();
   localStorage.setItem('device_id',did);
   try{
-    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_code:code,device_id:did,role:'event_admin'})});
+    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_code:code,device_id:did,admin_secret:code})});
     const d=await r.json();
     if(!r.ok)throw new Error(d.error||'Auth failed');
     adminToken=d.token;
@@ -1827,7 +1856,7 @@ setInterval(loadData,10000);
     };
     const role = appRoleMap[url.pathname] || "marshal";
     const eventId = url.searchParams.get("eventId") || EVENT_ID;
-    const localUrl = `${url.origin}/portal?role=${encodeURIComponent(role)}&eventId=${encodeURIComponent(eventId)}`;
+    const localUrl = `${url.origin}/portal?role=${encodeURIComponent(role)}&eventId=${eventId}`;
     const pwaBase = "https://dance-flow-control.lovable.app";
     const pwaUrl = pwaBase + url.pathname + url.search + (url.search ? "&" : "?") + "eventbox=" + encodeURIComponent(url.origin);
     const html = `<!DOCTYPE html>
@@ -1846,8 +1875,8 @@ a.cloud{background:#334155;color:#e2e8f0}a.cloud:hover{background:#475569}
 <h1>Staff Portal</h1>
 <p>Choose how to connect:</p>
 <div style="margin-top:1rem">
-<a class="btn local" href="${escapeHtml(localUrl)}">Open Local Portal</a><br>
-<a class="btn cloud" href="${escapeHtml(pwaUrl)}">Open Full App (needs internet)</a>
+<a class="btn local" href="${localUrl}">Open Local Portal</a><br>
+<a class="btn cloud" href="${pwaUrl}">Open Full App (needs internet)</a>
 </div>
 <p style="margin-top:1.5rem;font-size:.75rem">The local portal works on this network without internet. The full app has more features but requires internet access on first load.</p>
 </div></body></html>`;
@@ -1861,4 +1890,5 @@ console.log(`\n🎯 EventBox v0.4 running on port ${PORT}`);
 console.log(`   Event:     ${EVENT_ID}`);
 console.log(`   Room code: ${ROOM_CODE}`);
 console.log(`   Database:  ${DB_PATH}`);
+console.log(`   Admin key: ${ADMIN_SECRET === ROOM_CODE ? "(same as room code)" : "(custom EVENTBOX_ADMIN_SECRET)"}`);
 console.log(`   Auth:      HMAC-SHA256 tokens (${TOKEN_TTL_MS / 3600000}h TTL)\n`);
