@@ -912,6 +912,17 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
         return json({ event_id: EVENT_ID, results: rows });
       }
 
+      case "ref": {
+        const table = url.searchParams.get("table") || "";
+        if (!table) return json({ error: "table param required" }, 400);
+        const rows = queryRows(
+          `SELECT data_json, fetched_at FROM ref_data WHERE event_id=? AND table_name=?`,
+          [EVENT_ID, table],
+        );
+        if (rows.length === 0) return json({ data: null });
+        return json({ data: rows[0][0], fetched_at: rows[0][1] });
+      }
+
       default:
         return json({ error: `unknown state kind: ${kind}` }, 404);
     }
@@ -1796,19 +1807,7 @@ setInterval(loadData,10000);
     return new Response(html, { headers: { "content-type": "text/html" } });
   }
 
-  // ---- GET /state/ref — Serve ref_data from SQLite ----
-  if (url.pathname === "/state/ref" && req.method === "GET") {
-    const claims = await authenticate(req);
-    if (!claims) return json({ error: "unauthorized" }, 401);
-    const table = url.searchParams.get("table") || "";
-    if (!table) return json({ error: "table param required" }, 400);
-    const rows = queryRows(
-      `SELECT data_json, fetched_at FROM ref_data WHERE event_id=? AND table_name=?`,
-      [EVENT_ID, table],
-    );
-    if (rows.length === 0) return json({ data: null });
-    return json({ data: rows[0][0], fetched_at: rows[0][1] });
-  }
+  // /state/ref is now handled inside the /state/* switch block above
 
   // ---- /app/* catch-all: redirect to local portal or cloud ----
   if (url.pathname.startsWith("/app/")) {
