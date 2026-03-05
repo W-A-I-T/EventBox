@@ -5,7 +5,7 @@
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tauri::{
     CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu,
     SystemTrayMenuItem,
@@ -30,28 +30,33 @@ fn build_tray() -> SystemTray {
     SystemTray::new().with_menu(menu)
 }
 
-fn start_server(state: &Arc<Mutex<ServerState>>, app: &tauri::AppHandle) {
+fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
     let mut s = state.lock().unwrap();
     if s.child.is_some() {
         return; // already running
     }
 
-    // Resolve bundled compiled server binary
-    let server_bin = if cfg!(target_os = "windows") {
-        "resources/eventbox-server.exe"
-    } else {
-        "resources/eventbox-server"
-    };
+    // Resolve bundled server.ts
     let resource_path = app
         .path_resolver()
-        .resolve_resource(server_bin)
-        .expect("Failed to resolve eventbox-server binary");
+        .resolve_resource("resources/server.ts")
+        .expect("Failed to resolve server.ts resource");
 
     let port = s.port;
     let event_id = s.event_id.clone();
 
-    let mut cmd = Command::new(&resource_path);
-    cmd.env("EVENTBOX_PORT", port.to_string())
+    let mut cmd = Command::new("deno");
+    cmd.args([
+        "run",
+        "--allow-net",
+        "--allow-read",
+        "--allow-write",
+        "--allow-env",
+        "--allow-ffi",
+        "--unstable-ffi",
+        resource_path.to_str().unwrap(),
+    ])
+    .env("EVENTBOX_PORT", port.to_string())
     .env("EVENTBOX_EVENT_ID", &event_id)
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
@@ -61,7 +66,7 @@ fn start_server(state: &Arc<Mutex<ServerState>>, app: &tauri::AppHandle) {
             // Read stdout in background to capture room code
             if let Some(stdout) = child.stdout.take() {
                 let app_handle = app.clone();
-                let state_clone = Arc::clone(state);
+                let state_ref = app.state::<Mutex<ServerState>>();
                 std::thread::spawn(move || {
                     let reader = BufReader::new(stdout);
                     for line in reader.lines().map_while(Result::ok) {
@@ -71,7 +76,7 @@ fn start_server(state: &Arc<Mutex<ServerState>>, app: &tauri::AppHandle) {
                             if let Some(code) = line.split("Room code:").nth(1) {
                                 let code = code.trim().to_string();
                                 {
-                                    let mut s = state_clone.lock().unwrap();
+                                    let mut s = state_ref.lock().unwrap();
                                     s.room_code = Some(code.clone());
                                 }
                                 // Notify frontend
@@ -105,16 +110,16 @@ fn start_server(state: &Arc<Mutex<ServerState>>, app: &tauri::AppHandle) {
             }));
         }
         Err(e) => {
-            eprintln!("Failed to start EventBox server: {}", e);
+            eprintln!("Failed to start Deno server: {}", e);
             let _ = app.emit_all("server-status", serde_json::json!({
                 "running": false,
-                "error": format!("Failed to start server: {}", e),
+                "error": format!("Failed to start: {}. Is Deno installed?", e),
             }));
         }
     }
 }
 
-fn stop_server(state: &Arc<Mutex<ServerState>>, app: &tauri::AppHandle) {
+fn stop_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
     let mut s = state.lock().unwrap();
     if let Some(mut child) = s.child.take() {
         let _ = child.kill();
@@ -154,7 +159,6 @@ fn get_local_ips() -> Vec<String> {
 }
 
 fn main() {
-    // Parse CLI args for event-id
     let args: Vec<String> = std::env::args().collect();
     let mut event_id = std::env::var("EVENTBOX_EVENT_ID").unwrap_or_default();
     let mut port: u16 = std::env::var("EVENTBOX_PORT")
@@ -177,52 +181,46 @@ fn main() {
         }
     }
 
-    let server_state = Arc::new(Mutex::new(ServerState {
+    let server_state = Mutex::new(ServerState {
         child: None,
         room_code: None,
         port,
         event_id: event_id.clone(),
-    }));
-
-    let state_for_tray = Arc::clone(&server_state);
-    let state_for_setup = Arc::clone(&server_state);
+    });
 
     tauri::Builder::default()
         .manage(server_state)
+        .invoke_handler(tauri::generate_handler![set_event_id_and_start, stop_server_cmd])
         .system_tray(build_tray())
-        .on_system_tray_event(move |app, event| {
+        .on_system_tray_event(|app, event| {
             if let SystemTrayEvent::MenuItemClick { id, .. } = event {
+                let state = app.state::<Mutex<ServerState>>();
                 match id.as_str() {
-                    "start" => start_server(&state_for_tray, app),
-                    "stop" => stop_server(&state_for_tray, app),
+                    "start" => start_server(&state, app),
+                    "stop" => stop_server(&state, app),
                     "quit" => {
-                        stop_server(&state_for_tray, app);
+                        stop_server(&state, app);
                         std::process::exit(0);
                     }
                     _ => {}
                 }
             }
         })
-        .setup(move |app| {
+        .setup(|app| {
+            let state = app.state::<Mutex<ServerState>>();
             let handle = app.handle();
-
-            // Emit local IPs to frontend
             let ips = get_local_ips();
             let _ = handle.emit_all("local-ips", serde_json::json!({ "ips": ips }));
-
-            // Auto-start if event_id is configured
             {
-                let s = state_for_setup.lock().unwrap();
+                let s = state.lock().unwrap();
                 if !s.event_id.is_empty() {
                     drop(s);
-                    start_server(&state_for_setup, &handle);
+                    start_server(&state, &handle);
                 }
             }
-
             Ok(())
         })
         .on_window_event(|event| {
-            // Keep running in tray when window closes
             if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
                 event.window().hide().unwrap();
                 api.prevent_close();
@@ -230,4 +228,35 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("Error running EventBox");
+}
+
+#[tauri::command]
+fn set_event_id_and_start(
+    state: tauri::State<'_, Mutex<ServerState>>,
+    app_handle: tauri::AppHandle,
+    event_id: String,
+    port: Option<u16>,
+) -> Result<(), String> {
+    if event_id.trim().is_empty() {
+        return Err("Event ID cannot be empty".into());
+    }
+    stop_server(&state, &app_handle);
+    {
+        let mut s = state.lock().unwrap();
+        s.event_id = event_id.trim().to_string();
+        if let Some(p) = port {
+            s.port = p;
+        }
+    }
+    start_server(&state, &app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_server_cmd(
+    state: tauri::State<'_, Mutex<ServerState>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    stop_server(&state, &app_handle);
+    Ok(())
 }

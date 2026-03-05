@@ -202,6 +202,7 @@
     let port = 8787;
     let localIps = [];
     let eventId = '';
+    let starting = false;
 
     // ---- Tauri event listeners ----
     // Check if running inside Tauri
@@ -212,6 +213,7 @@
 
       listen('server-status', (e) => {
         const d = e.payload;
+        starting = false;
         serverRunning = !!d.running;
         if (d.room_code) roomCode = d.room_code;
         if (d.port) port = d.port;
@@ -239,17 +241,36 @@
         return;
       }
       eventId = id;
+      roomCode = '';  // Clear stale room code before restarting
       if (isTauri) {
-        // In Tauri, the setup auto-starts. For manual start, we'd use a command.
-        // For now, show "restart required" since event ID is set at launch
-        showError('Set event ID before launching the app, or restart with: --event-id ' + id);
+        const { invoke } = window.__TAURI__.tauri;
+        const btn = document.getElementById('start-btn');
+        starting = true;
+        btn.disabled = true;
+        btn.textContent = 'Starting…';
+        invoke('set_event_id_and_start', { eventId: id })
+          .then(() => {
+            // The command resolves when the process spawns.
+            // If the server crashes before emitting a room code, we must re-enable the UI.
+            starting = false;
+            btn.disabled = false;
+            btn.textContent = 'Start';
+          })
+          .catch((err) => {
+            starting = false;
+            showError(String(err));
+            btn.disabled = false;
+            btn.textContent = 'Start';
+          });
+      } else {
+        showError('This UI requires the EventBox desktop app.');
       }
     }
 
     function handleStop() {
-      // Tauri tray handles this, but we can also trigger from UI
-      if (isTauri && window.__TAURI__.process) {
-        // The tray "stop" menu item handles this
+      if (isTauri) {
+        const { invoke } = window.__TAURI__.tauri;
+        invoke('stop_server_cmd').catch(() => {});
       }
       serverRunning = false;
       updateUI();
@@ -297,6 +318,12 @@
       } else {
         setupCard.classList.remove('hidden');
         runningCard.classList.add('hidden');
+
+        const btn = document.getElementById('start-btn');
+        if (btn) {
+          btn.disabled = starting;
+          btn.textContent = starting ? 'Starting…' : 'Start';
+        }
       }
     }
 
@@ -314,26 +341,46 @@
       setTimeout(() => t.classList.remove('show'), 2000);
     }
 
-    // ---- Minimal QR code (draws text placeholder; real QR via library) ----
     function generateQR() {
       const canvas = document.getElementById('qr-canvas');
-      const ctx = canvas.getContext('2d');
       const url = localIps.length > 0
-        ? `http://${localIps[0]}:${port}/staff`
-        : `http://localhost:${port}/staff`;
+        ? `http://${localIps[0]}:${port}/staff?join=${roomCode}`
+        : `http://localhost:${port}/staff?join=${roomCode}`;
 
-      // Simple placeholder — in production, use a QR library
+      // Try loading qrcode lib from CDN
+      if (window.qrcode) {
+        drawRealQR(url);
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
+      s.onload = function() { drawRealQR(url); };
+      s.onerror = function() { drawFallbackQR(canvas, url); };
+      document.head.appendChild(s);
+    }
+
+    function drawRealQR(url) {
+      const container = document.getElementById('qr-container');
+      const qr = qrcode(0, 'L');
+      qr.addData(url);
+      qr.make();
+      container.innerHTML = qr.createImgTag(5, 8);
+    }
+
+    function drawFallbackQR(canvas, url) {
+      const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, 180, 180);
       ctx.fillStyle = '#0f172a';
       ctx.font = 'bold 14px system-ui';
       ctx.textAlign = 'center';
-      ctx.fillText('QR Code', 90, 80);
-      ctx.font = '10px monospace';
-      ctx.fillText(url, 90, 105);
+      ctx.fillText('Room Code:', 90, 70);
+      ctx.font = 'bold 28px monospace';
+      ctx.fillText(roomCode, 90, 105);
       ctx.font = '9px system-ui';
       ctx.fillStyle = '#64748b';
-      ctx.fillText('(Add qrcode.js for real QR)', 90, 130);
+      ctx.fillText(url, 90, 130);
+      ctx.fillText('(QR unavailable offline)', 90, 150);
     }
 
     // Initial render
