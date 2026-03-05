@@ -553,9 +553,8 @@ function applyOp(op: Op): ApplyResult {
 
   db.exec("COMMIT");
 
-  // 3. Broadcast to all connected peers (after commit so DB is consistent)
+  // 3. Broadcast to all connected peers (after COMMIT to avoid phantom ops)
   broadcastToEvent(op.event_id, { type: "op.applied", op });
-
   return { accepted: true };
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
@@ -754,16 +753,19 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
     attempts.push(now);
 
     const body = await req.json().catch(() => null);
-    if (body?.room_code !== ROOM_CODE) {
-      return json({ ok: false, error: "invalid_room_code" }, 401);
-    }
-    const deviceId = body.device_id ?? crypto.randomUUID();
+    const deviceId = body?.device_id ?? crypto.randomUUID();
 
     // Derive role securely — never trust client-supplied role
     let role = "viewer";
     let staffSessionId: string | undefined;
 
-    if (body.staff_session_id) {
+    // Check admin_secret FIRST — grants event_admin without needing room_code
+    if (body?.admin_secret && body.admin_secret === ADMIN_SECRET) {
+      role = "event_admin";
+    } else if (body?.room_code !== ROOM_CODE) {
+      // room_code is required for non-admin auth
+      return json({ ok: false, error: "invalid_room_code" }, 401);
+    } else if (body.staff_session_id) {
       // Look up role from staff_sessions table
       const sessionRows = queryRows(
         `SELECT id, role, revoked_at, expires_at FROM staff_sessions WHERE id=? AND event_id=?`,
@@ -781,9 +783,6 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
       }
       role = String(sessionRole);
       staffSessionId = String(id);
-    } else if (body.admin_secret && body.admin_secret === ADMIN_SECRET) {
-      // Admin dashboard auth via shared secret
-      role = "event_admin";
     }
     // Otherwise: role stays "viewer" (read-only, no write permissions)
 
@@ -1398,9 +1397,9 @@ select:focus,input[type=text]:focus{border-color:#6366f1}
 
 <div class="card" id="auth-card">
 <p class="label">Authenticate</p>
-<p style="font-size:.8rem;color:#94a3b8;margin:.5rem 0">Enter the room code to manage staff sessions:</p>
+<p style="font-size:.8rem;color:#94a3b8;margin:.5rem 0">Enter the admin secret to manage staff sessions:</p>
 <div style="display:flex;gap:.5rem">
-<input type="text" id="admin-code" placeholder="Room code" style="flex:1">
+<input type="text" id="admin-code" placeholder="Admin secret" style="flex:1">
 <button class="btn btn-primary" onclick="authAdmin()">Unlock</button>
 </div>
 <div id="auth-error" style="color:#f87171;font-size:.8rem;margin-top:.5rem"></div>
@@ -1457,7 +1456,7 @@ async function authAdmin(){
   const did=localStorage.getItem('device_id')||crypto.randomUUID();
   localStorage.setItem('device_id',did);
   try{
-    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_code:code,device_id:did,admin_secret:code})});
+    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_id:did,admin_secret:code})});
     const d=await r.json();
     if(!r.ok)throw new Error(d.error||'Auth failed');
     adminToken=d.token;
@@ -1876,8 +1875,8 @@ a.cloud{background:#334155;color:#e2e8f0}a.cloud:hover{background:#475569}
 <h1>Staff Portal</h1>
 <p>Choose how to connect:</p>
 <div style="margin-top:1rem">
-<a class="btn local" href="${localUrl}">Open Local Portal</a><br>
-<a class="btn cloud" href="${pwaUrl}">Open Full App (needs internet)</a>
+<a class="btn local" href="${escapeHtml(localUrl)}">Open Local Portal</a><br>
+<a class="btn cloud" href="${escapeHtml(pwaUrl)}">Open Full App (needs internet)</a>
 </div>
 <p style="margin-top:1.5rem;font-size:.75rem">The local portal works on this network without internet. The full app has more features but requires internet access on first load.</p>
 </div></body></html>`;
