@@ -35,6 +35,16 @@ const SECRET =
 
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
+// HTML escape helper — prevents XSS in server-rendered templates
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 if (!EVENT_ID) {
   console.error("ERROR: EVENTBOX_EVENT_ID is required. Pass it via env or --event-id flag.");
   Deno.exit(1);
@@ -356,180 +366,193 @@ function applyOp(op: Op): ApplyResult {
 
   const now = Date.now();
 
-  // 1. Idempotent insert into op log
+  // Wrap entire op application in a transaction for atomicity.
+  // If FSM rejects, the op log INSERT is rolled back too.
+  db.exec("BEGIN");
   try {
-    queryRun(
-      `INSERT INTO ops(op_id,event_id,actor_device_id,actor_role,op_type,entity_type,entity_id,payload_json,created_at_ms,received_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [
-        op.op_id, op.event_id, op.actor_device_id ?? null,
-        op.actor_role ?? null, op.op_type, op.entity_type ?? null,
-        op.entity_id ?? null, JSON.stringify(op.payload ?? {}),
-        op.created_at_ms, now,
-      ],
-    );
-  } catch {
-    return { accepted: false, reason: "duplicate" };
-  }
-
-  // 2. Reduce into materialized state
-  const p = op.payload as Record<string, unknown>;
-
-  switch (op.op_type) {
-    case "checkin": {
-      if (p?.credential_id && p?.status) {
-        queryRun(
-          `INSERT INTO checkins(event_id,credential_id,status,device_id,updated_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,credential_id) DO UPDATE SET
-             status=excluded.status, device_id=excluded.device_id, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.credential_id, p.status, op.actor_device_id ?? null, now],
-        );
-      }
-      break;
-    }
-
-    case "marshal": {
-      if (p?.heat_entry_id && p?.status) {
-        const rows = queryRows(
-          `SELECT status FROM marshal_status WHERE event_id=? AND heat_entry_id=?`,
-          [op.event_id, p.heat_entry_id],
-        );
-        const currentState = rows.length > 0 ? String(rows[0][0]) : null;
-
-        if (!isFsmAllowed(currentState, p.status as string)) {
-          return { accepted: false, reason: "fsm_rejected" };
-        }
-
-        queryRun(
-          `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
-             status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.heat_entry_id, p.status, op.actor_device_id ?? null, now],
-        );
-      }
-      break;
-    }
-
-    case "heat_state": {
-      if (p?.heat_id && p?.status) {
-        const rows = queryRows(
-          `SELECT status FROM heat_status WHERE event_id=? AND heat_id=?`,
-          [op.event_id, p.heat_id],
-        );
-        const currentState = rows.length > 0 ? String(rows[0][0]) : null;
-
-        if (!isFsmAllowed(currentState, p.status as string)) {
-          return { accepted: false, reason: "fsm_rejected" };
-        }
-
-        queryRun(
-          `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_id) DO UPDATE SET
-             status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.heat_id, p.status, op.actor_device_id ?? null, now],
-        );
-      }
-      break;
-    }
-
-    case "score": {
-      if (p?.heat_id && p?.dance_code && p?.judge_assignment_id && p?.heat_entry_id) {
-        queryRun(
-          `INSERT INTO judge_marks(event_id,heat_id,dance_code,judge_assignment_id,heat_entry_id,mark_type,mark_value,updated_at_ms)
-           VALUES (?,?,?,?,?,?,?,?)
-           ON CONFLICT(event_id,heat_id,dance_code,judge_assignment_id,heat_entry_id) DO UPDATE SET
-             mark_type=excluded.mark_type, mark_value=excluded.mark_value, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.heat_id, p.dance_code, p.judge_assignment_id, p.heat_entry_id, p.mark_type ?? "ordinal", JSON.stringify(p.mark_value), now],
-        );
-      }
-      break;
-    }
-
-    case "score_submission": {
-      if (p?.heat_id && p?.dance_code && p?.judge_assignment_id) {
-        queryRun(
-          `INSERT INTO judge_submissions(event_id,heat_id,dance_code,judge_assignment_id,submitted_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_id,dance_code,judge_assignment_id) DO UPDATE SET
-             submitted_at_ms=excluded.submitted_at_ms`,
-          [op.event_id, p.heat_id, p.dance_code, p.judge_assignment_id, now],
-        );
-      }
-      break;
-    }
-
-    case "scratch": {
-      if (p?.heat_entry_id) {
-        queryRun(
-          `INSERT INTO scratches(event_id,heat_entry_id,reason,requested_by,requested_at)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
-             reason=excluded.reason, requested_by=excluded.requested_by, requested_at=excluded.requested_at`,
-          [op.event_id, p.heat_entry_id, p.reason ?? null, p.requested_by ?? null, p.requested_at ?? new Date(now).toISOString()],
-        );
-
-        queryRun(
-          `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
-             status='cancelled', updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.heat_entry_id, "cancelled", op.actor_device_id ?? null, now],
-        );
-      }
-      break;
-    }
-
-    case "nowplaying": {
+    // 1. Idempotent insert into op log
+    try {
       queryRun(
-        `INSERT INTO now_playing(event_id,heat_id,heat_number,division_name,dance_code,status,updated_at_ms)
-         VALUES (?,?,?,?,?,?,?)
-         ON CONFLICT(event_id) DO UPDATE SET
-           heat_id=excluded.heat_id, heat_number=excluded.heat_number,
-           division_name=excluded.division_name, dance_code=excluded.dance_code,
-           status=excluded.status, updated_at_ms=excluded.updated_at_ms`,
-        [op.event_id, p.heat_id ?? null, p.heat_number ?? null, p.division_name ?? null, p.dance_code ?? null, p.status ?? "playing", now],
+        `INSERT INTO ops(op_id,event_id,actor_device_id,actor_role,op_type,entity_type,entity_id,payload_json,created_at_ms,received_at_ms)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [
+          op.op_id, op.event_id, op.actor_device_id ?? null,
+          op.actor_role ?? null, op.op_type, op.entity_type ?? null,
+          op.entity_id ?? null, JSON.stringify(op.payload ?? {}),
+          op.created_at_ms, now,
+        ],
       );
-      break;
+    } catch {
+      db.exec("ROLLBACK");
+      return { accepted: false, reason: "duplicate" };
     }
 
-    case "result_publish": {
-      if (p?.heat_id && p?.placements) {
-        queryRun(
-          `INSERT INTO published_results(event_id,heat_id,result_json,published_by,published_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_id) DO UPDATE SET
-             result_json=excluded.result_json, published_by=excluded.published_by, published_at_ms=excluded.published_at_ms`,
-          [op.event_id, p.heat_id, JSON.stringify(p.placements), op.actor_device_id ?? null, now],
-        );
+    // 2. Reduce into materialized state
+    const p = op.payload as Record<string, unknown>;
+
+    switch (op.op_type) {
+      case "checkin": {
+        if (p?.credential_id && p?.status) {
+          queryRun(
+            `INSERT INTO checkins(event_id,credential_id,status,device_id,updated_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,credential_id) DO UPDATE SET
+               status=excluded.status, device_id=excluded.device_id, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.credential_id, p.status, op.actor_device_id ?? null, now],
+          );
+        }
+        break;
       }
-      break;
-    }
 
-    case "chairman_override": {
-      if (p?.heat_id && p?.action) {
-        const stateMap: Record<string, string> = {
-          skip: "cancelled",
-          recall: "on_floor",
-          restart: "scheduled",
-          complete: "completed",
-        };
-        const newStatus = stateMap[p.action as string] ?? (p.action as string);
-        queryRun(
-          `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(event_id,heat_id) DO UPDATE SET
-             status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
-          [op.event_id, p.heat_id, newStatus, op.actor_device_id ?? null, now],
-        );
+      case "marshal": {
+        if (p?.heat_entry_id && p?.status) {
+          const rows = queryRows(
+            `SELECT status FROM marshal_status WHERE event_id=? AND heat_entry_id=?`,
+            [op.event_id, p.heat_entry_id],
+          );
+          const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+
+          if (!isFsmAllowed(currentState, p.status as string)) {
+            db.exec("ROLLBACK");
+            return { accepted: false, reason: "fsm_rejected" };
+          }
+
+          queryRun(
+            `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
+               status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.heat_entry_id, p.status, op.actor_device_id ?? null, now],
+          );
+        }
+        break;
       }
-      break;
+
+      case "heat_state": {
+        if (p?.heat_id && p?.status) {
+          const rows = queryRows(
+            `SELECT status FROM heat_status WHERE event_id=? AND heat_id=?`,
+            [op.event_id, p.heat_id],
+          );
+          const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+
+          if (!isFsmAllowed(currentState, p.status as string)) {
+            db.exec("ROLLBACK");
+            return { accepted: false, reason: "fsm_rejected" };
+          }
+
+          queryRun(
+            `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_id) DO UPDATE SET
+               status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.heat_id, p.status, op.actor_device_id ?? null, now],
+          );
+        }
+        break;
+      }
+
+      case "score": {
+        if (p?.heat_id && p?.dance_code && p?.judge_assignment_id && p?.heat_entry_id) {
+          queryRun(
+            `INSERT INTO judge_marks(event_id,heat_id,dance_code,judge_assignment_id,heat_entry_id,mark_type,mark_value,updated_at_ms)
+             VALUES (?,?,?,?,?,?,?,?)
+             ON CONFLICT(event_id,heat_id,dance_code,judge_assignment_id,heat_entry_id) DO UPDATE SET
+               mark_type=excluded.mark_type, mark_value=excluded.mark_value, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.heat_id, p.dance_code, p.judge_assignment_id, p.heat_entry_id, p.mark_type ?? "ordinal", JSON.stringify(p.mark_value), now],
+          );
+        }
+        break;
+      }
+
+      case "score_submission": {
+        if (p?.heat_id && p?.dance_code && p?.judge_assignment_id) {
+          queryRun(
+            `INSERT INTO judge_submissions(event_id,heat_id,dance_code,judge_assignment_id,submitted_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_id,dance_code,judge_assignment_id) DO UPDATE SET
+               submitted_at_ms=excluded.submitted_at_ms`,
+            [op.event_id, p.heat_id, p.dance_code, p.judge_assignment_id, now],
+          );
+        }
+        break;
+      }
+
+      case "scratch": {
+        if (p?.heat_entry_id) {
+          queryRun(
+            `INSERT INTO scratches(event_id,heat_entry_id,reason,requested_by,requested_at)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
+               reason=excluded.reason, requested_by=excluded.requested_by, requested_at=excluded.requested_at`,
+            [op.event_id, p.heat_entry_id, p.reason ?? null, p.requested_by ?? null, p.requested_at ?? new Date(now).toISOString()],
+          );
+
+          queryRun(
+            `INSERT INTO marshal_status(event_id,heat_entry_id,status,updated_by,updated_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_entry_id) DO UPDATE SET
+               status='cancelled', updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.heat_entry_id, "cancelled", op.actor_device_id ?? null, now],
+          );
+        }
+        break;
+      }
+
+      case "nowplaying": {
+        queryRun(
+          `INSERT INTO now_playing(event_id,heat_id,heat_number,division_name,dance_code,status,updated_at_ms)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(event_id) DO UPDATE SET
+             heat_id=excluded.heat_id, heat_number=excluded.heat_number,
+             division_name=excluded.division_name, dance_code=excluded.dance_code,
+             status=excluded.status, updated_at_ms=excluded.updated_at_ms`,
+          [op.event_id, p.heat_id ?? null, p.heat_number ?? null, p.division_name ?? null, p.dance_code ?? null, p.status ?? "playing", now],
+        );
+        break;
+      }
+
+      case "result_publish": {
+        if (p?.heat_id && p?.placements) {
+          queryRun(
+            `INSERT INTO published_results(event_id,heat_id,result_json,published_by,published_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_id) DO UPDATE SET
+               result_json=excluded.result_json, published_by=excluded.published_by, published_at_ms=excluded.published_at_ms`,
+            [op.event_id, p.heat_id, JSON.stringify(p.placements), op.actor_device_id ?? null, now],
+          );
+        }
+        break;
+      }
+
+      case "chairman_override": {
+        if (p?.heat_id && p?.action) {
+          const stateMap: Record<string, string> = {
+            skip: "cancelled",
+            recall: "on_floor",
+            restart: "scheduled",
+            complete: "completed",
+          };
+          const newStatus = stateMap[p.action as string] ?? (p.action as string);
+          queryRun(
+            `INSERT INTO heat_status(event_id,heat_id,status,updated_by,updated_at_ms)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT(event_id,heat_id) DO UPDATE SET
+               status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
+            [op.event_id, p.heat_id, newStatus, op.actor_device_id ?? null, now],
+          );
+        }
+        break;
+      }
+
+      default:
+        break;
     }
 
-    default:
-      break;
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
   }
 
   // 3. Broadcast to all connected peers
@@ -599,7 +622,7 @@ Deno.serve({ port: PORT }, async (req) => {
   if (url.pathname === "/" && req.method === "GET") {
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — ${EVENT_ID.slice(0,8)}</title>
+<title>EventBox — ${escapeHtml(EVENT_ID.slice(0,8))}</title>
 <style>
 *{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center}
 .card{background:#1e293b;border-radius:16px;padding:2.5rem;max-width:480px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5)}
@@ -617,12 +640,12 @@ a{color:#818cf8}hr{border:none;border-top:1px solid #334155;margin:1.5rem 0}
 <h1>EventBox<span class="badge">Running</span></h1>
 <p style="color:#94a3b8;font-size:.85rem;margin-top:.25rem">LAN Authority Server v0.4</p>
 <div class="info">
-<span class="label">Event ID:</span> <span class="val">${EVENT_ID}</span><br>
+<span class="label">Event ID:</span> <span class="val">${escapeHtml(EVENT_ID)}</span><br>
 <span class="label">Port:</span> <span class="val">${PORT}</span><br>
-<span class="label">Database:</span> <span class="val">${DB_PATH}</span>
+<span class="label">Database:</span> <span class="val">${escapeHtml(DB_PATH)}</span>
 </div>
 <p style="color:#94a3b8;font-size:.85rem">Room Code — share this with staff:</p>
-<div class="code" style="cursor:pointer" onclick="navigator.clipboard.writeText('${ROOM_CODE}')" title="Click to copy">${ROOM_CODE}</div>
+<div class="code" style="cursor:pointer" onclick='navigator.clipboard.writeText(${JSON.stringify(ROOM_CODE)})' title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
 <div id="qr-root" style="display:flex;justify-content:center;padding:1rem;background:#fff;border-radius:8px;margin:1rem 0"></div>
 <p class="hint">Staff scan the QR code or enter the Room Code at <strong>/staff</strong> to connect.</p>
 <hr>
@@ -648,7 +671,7 @@ a{color:#818cf8}hr{border:none;border-top:1px solid #334155;margin:1.5rem 0}
     ctx.font='bold 16px system-ui';ctx.textAlign='center';
     ctx.fillText('Scan with camera or enter code:',size/2,size/2-10);
     ctx.font='bold 28px monospace';
-    ctx.fillText('${ROOM_CODE}',size/2,size/2+30);
+    ctx.fillText(${JSON.stringify(ROOM_CODE)},size/2,size/2+30);
     ctx.font='11px system-ui';ctx.fillStyle='#64748b';
     ctx.fillText(location.origin+'/staff',size/2,size/2+55);
     container.appendChild(canvas);
@@ -658,12 +681,12 @@ a{color:#818cf8}hr{border:none;border-top:1px solid #334155;margin:1.5rem 0}
   s.src='https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
   s.onload=function(){
     const qr=qrcode(0,'L');
-    qr.addData(location.origin+'/staff?join=${ROOM_CODE}');
+    qr.addData(location.origin+'/staff?join='+encodeURIComponent(${JSON.stringify(ROOM_CODE)}));
     qr.make();
     document.getElementById('qr-root').innerHTML=qr.createImgTag(5,8);
   };
   s.onerror=function(){
-    qrToCanvas('${ROOM_CODE}',document.getElementById('qr-root'),240);
+    qrToCanvas(${JSON.stringify(ROOM_CODE)},document.getElementById('qr-root'),240);
   };
   document.head.appendChild(s);
 })();
@@ -695,7 +718,7 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
 <div class="badge">✓ All Systems OK</div>
 <div class="info">
 <span class="label">Status:</span> <span class="val">Running</span><br>
-<span class="label">Event ID:</span> <span class="val">${EVENT_ID}</span><br>
+<span class="label">Event ID:</span> <span class="val">${escapeHtml(EVENT_ID)}</span><br>
 <span class="label">Version:</span> <span class="val">0.4.0</span><br>
 <span class="label">Time:</span> <span class="val">${new Date().toISOString()}</span><br>
 <span class="label">Port:</span> <span class="val">${PORT}</span>
@@ -1006,12 +1029,10 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
   // ---- Staff Sessions (BYOD) ----
 
   function generateJoinCode(): string {
-    return Array.from(crypto.getRandomValues(new Uint8Array(4)))
-      .map((b) => b.toString(36).slice(-1))
+    return Array.from(crypto.getRandomValues(new Uint8Array(6)))
+      .map((b) => (b % 36).toString(36))
       .join("")
-      .toUpperCase()
-      .slice(0, 6)
-      .padEnd(6, "A");
+      .toUpperCase();
   }
 
   // POST /api/staff-sessions — Create a staff session (admin auth required)
@@ -1162,7 +1183,7 @@ button:hover{background:#4f46e5}button:disabled{opacity:.5;cursor:not-allowed}
 <body><div class="card">
 <h1>Staff Join</h1>
 <p class="subtitle">Enter the <strong style="color:#f59e0b">Room Code</strong> from the EventBox dashboard</p>
-<input id="code" placeholder="000000" maxlength="8" value="${joinCode}" autofocus>
+<input id="code" placeholder="000000" maxlength="8" value="${escapeHtml(joinCode)}" autofocus>
 <button id="btn" onclick="join()">Connect</button>
 <div class="msg" id="msg"></div>
 <a class="back" href="/">← Back to Dashboard</a>
@@ -1324,13 +1345,13 @@ select:focus,input[type=text]:focus{border-color:#6366f1}
 
 <div class="card">
 <p class="label">Room Code — staff enter this to connect</p>
-<div class="room-code" onclick="copy('${ROOM_CODE}')" title="Click to copy">${ROOM_CODE}</div>
+<div class="room-code" onclick='copy(${JSON.stringify(ROOM_CODE)})' title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
 <div class="qr-wrap" id="qr-admin"></div>
 </div>
 
 <div class="card">
 <p class="label">Event ID</p>
-<div class="event-id" onclick="copy('${EVENT_ID}')" title="Click to copy">${EVENT_ID}</div>
+<div class="event-id" onclick='copy(${JSON.stringify(EVENT_ID)})' title="Click to copy">${escapeHtml(EVENT_ID)}</div>
 </div>
 
 <div class="card" id="auth-card">
@@ -1377,7 +1398,7 @@ function copy(t){navigator.clipboard.writeText(t).then(()=>showToast('Copied!'))
   s.src='https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
   s.onload=function(){
     const qr=qrcode(0,'L');
-    qr.addData(location.origin+'/staff?join=${ROOM_CODE}');
+    qr.addData(location.origin+'/staff?join='+encodeURIComponent(${JSON.stringify(ROOM_CODE)}));
     qr.make();
     document.getElementById('qr-admin').innerHTML=qr.createImgTag(4,6);
   };
@@ -1477,7 +1498,7 @@ if(adminToken){
 
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — ${title}</title>
+<title>EventBox — ${escapeHtml(title)}</title>
 <style>
 *{box-sizing:border-box;margin:0}
 body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
@@ -1523,7 +1544,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2
 </style></head>
 <body>
 <div class="topbar">
-  <h1><span class="sync-dot"></span> ${title} <span class="badge">${role}</span></h1>
+  <h1><span class="sync-dot"></span> ${escapeHtml(title)} <span class="badge">${escapeHtml(role)}</span></h1>
   <button class="refresh-btn" onclick="loadData()">↻ Refresh</button>
 </div>
 <div class="upgrade-banner">Local-only mode — <a href="https://dance-flow-control.lovable.app" target="_blank">open full app</a> when internet is available</div>
@@ -1806,7 +1827,7 @@ setInterval(loadData,10000);
     };
     const role = appRoleMap[url.pathname] || "marshal";
     const eventId = url.searchParams.get("eventId") || EVENT_ID;
-    const localUrl = `${url.origin}/portal?role=${encodeURIComponent(role)}&eventId=${eventId}`;
+    const localUrl = `${url.origin}/portal?role=${encodeURIComponent(role)}&eventId=${encodeURIComponent(eventId)}`;
     const pwaBase = "https://dance-flow-control.lovable.app";
     const pwaUrl = pwaBase + url.pathname + url.search + (url.search ? "&" : "?") + "eventbox=" + encodeURIComponent(url.origin);
     const html = `<!DOCTYPE html>
@@ -1825,8 +1846,8 @@ a.cloud{background:#334155;color:#e2e8f0}a.cloud:hover{background:#475569}
 <h1>Staff Portal</h1>
 <p>Choose how to connect:</p>
 <div style="margin-top:1rem">
-<a class="btn local" href="${localUrl}">Open Local Portal</a><br>
-<a class="btn cloud" href="${pwaUrl}">Open Full App (needs internet)</a>
+<a class="btn local" href="${escapeHtml(localUrl)}">Open Local Portal</a><br>
+<a class="btn cloud" href="${escapeHtml(pwaUrl)}">Open Full App (needs internet)</a>
 </div>
 <p style="margin-top:1.5rem;font-size:.75rem">The local portal works on this network without internet. The full app has more features but requires internet access on first load.</p>
 </div></body></html>`;

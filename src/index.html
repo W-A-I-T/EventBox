@@ -202,6 +202,7 @@
     let port = 8787;
     let localIps = [];
     let eventId = '';
+    let starting = false;
 
     // ---- Tauri event listeners ----
     // Check if running inside Tauri
@@ -212,6 +213,7 @@
 
       listen('server-status', (e) => {
         const d = e.payload;
+        starting = false;
         serverRunning = !!d.running;
         if (d.room_code) roomCode = d.room_code;
         if (d.port) port = d.port;
@@ -241,14 +243,23 @@
       eventId = id;
       if (isTauri) {
         const { invoke } = window.__TAURI__.tauri;
-        document.getElementById('start-btn').disabled = true;
-        document.getElementById('start-btn').textContent = 'Starting…';
+        const btn = document.getElementById('start-btn');
+        starting = true;
+        btn.disabled = true;
+        btn.textContent = 'Starting…';
         invoke('set_event_id_and_start', { eventId: id })
-          .then(() => { /* server-status event will update UI */ })
+          .then(() => {
+            // The command resolves when the process spawns.
+            // If the server crashes before emitting a room code, we must re-enable the UI.
+            starting = false;
+            btn.disabled = false;
+            btn.textContent = 'Start';
+          })
           .catch((err) => {
+            starting = false;
             showError(String(err));
-            document.getElementById('start-btn').disabled = false;
-            document.getElementById('start-btn').textContent = 'Start';
+            btn.disabled = false;
+            btn.textContent = 'Start';
           });
       } else {
         showError('This UI requires the EventBox desktop app.');
@@ -306,6 +317,12 @@
       } else {
         setupCard.classList.remove('hidden');
         runningCard.classList.add('hidden');
+
+        const btn = document.getElementById('start-btn');
+        if (btn) {
+          btn.disabled = starting;
+          btn.textContent = starting ? 'Starting…' : 'Start';
+        }
       }
     }
 
