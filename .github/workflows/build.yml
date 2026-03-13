@@ -34,7 +34,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      # Pin Rust 1.79 on Linux: newer compilers break wry 0.24 due to
+      # Pin Rust 1.85 on Linux: newer compilers break wry 0.24 due to
       # a glob-import trait-name collision between gtk::prelude::SettingsExt
       # and webkit2gtk::SettingsExt (see issue #18).
       - name: Install Rust 1.85 for project build (Linux)
