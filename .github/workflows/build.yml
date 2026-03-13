@@ -34,6 +34,13 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      # Pin Rust 1.85 on Linux: newer compilers break wry 0.24 due to
+      # a glob-import trait-name collision between gtk::prelude::SettingsExt
+      # and webkit2gtk::SettingsExt (see issue #18).
+      - name: Install Rust 1.85 for project build (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: rustup toolchain install 1.85.0 --profile minimal
+
       - name: Install Deno
         uses: denoland/setup-deno@v2
         with:
@@ -60,6 +67,8 @@ jobs:
 
       - name: Build Tauri app
         run: cd src-tauri && cargo tauri build
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.platform == 'ubuntu-22.04' && '1.85.0' || 'stable' }}
 
       - name: Rename artifacts to friendly names
         shell: bash
