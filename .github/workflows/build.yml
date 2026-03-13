@@ -16,20 +16,14 @@ jobs:
             rust-target: x86_64-unknown-linux-gnu
             deno-target: x86_64-unknown-linux-gnu
             server-output: src-tauri/resources/eventbox-server
-            # Pin Rust 1.79 on Linux: newer compilers break wry 0.24 due to
-            # a glob-import trait-name collision between gtk::prelude::SettingsExt
-            # and webkit2gtk::SettingsExt (see issue #18).
-            rust-toolchain: "1.79.0"
           - platform: windows-latest
             rust-target: x86_64-pc-windows-msvc
             deno-target: x86_64-pc-windows-msvc
             server-output: src-tauri/resources/eventbox-server.exe
-            rust-toolchain: stable
           - platform: macos-latest
             rust-target: aarch64-apple-darwin
             deno-target: aarch64-apple-darwin
             server-output: src-tauri/resources/eventbox-server
-            rust-toolchain: stable
 
     runs-on: ${{ matrix.platform }}
 
@@ -37,10 +31,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust-toolchain }}
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # Pin Rust 1.79 on Linux: newer compilers break wry 0.24 due to
+      # a glob-import trait-name collision between gtk::prelude::SettingsExt
+      # and webkit2gtk::SettingsExt (see issue #18).
+      - name: Install Rust 1.79 for project build (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: rustup toolchain install 1.79.0 --profile minimal
 
       - name: Install Deno
         uses: denoland/setup-deno@v2
@@ -68,6 +67,8 @@ jobs:
 
       - name: Build Tauri app
         run: cd src-tauri && cargo tauri build
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.platform == 'ubuntu-22.04' && '1.79.0' || 'stable' }}
 
       - name: Rename artifacts to friendly names
         shell: bash
