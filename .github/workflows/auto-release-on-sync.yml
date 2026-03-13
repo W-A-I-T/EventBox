@@ -1,0 +1,81 @@
+name: Auto-release on sync
+
+# Creates a new patch release whenever an auto-sync commit lands on main.
+# The version bump commit + tag push triggers the existing Build & Release workflow.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  auto-tag:
+    # Only run for auto-sync commits (prevents infinite loops from the version bump commit)
+    if: startsWith(github.event.head_commit.message, 'chore: auto-sync')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use PAT so the tag push triggers the Build & Release workflow.
+          # Tags pushed by GITHUB_TOKEN do NOT trigger other workflows.
+          token: ${{ secrets.CROSS_REPO_PAT }}
+
+      - name: Compute next patch version
+        id: version
+        run: |
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST"
+
+          MAJOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f1)
+          MINOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f2)
+          PATCH=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f3)
+
+          NEXT_PATCH=$((PATCH + 1))
+          NEXT_TAG="v${MAJOR}.${MINOR}.${NEXT_PATCH}"
+          NEXT_SEM="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+
+          echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
+          echo "semver=$NEXT_SEM" >> "$GITHUB_OUTPUT"
+          echo "Next version: $NEXT_TAG"
+
+      - name: Bump version in project files
+        run: |
+          VER="${{ steps.version.outputs.semver }}"
+          echo "Bumping version to $VER"
+
+          # package.json — top-level "version" field
+          sed -i 's/"version": "[^"]*"/"version": "'"$VER"'"/' package.json
+
+          # tauri.conf.json — package.version field
+          sed -i 's/"version": "[^"]*"/"version": "'"$VER"'"/' src-tauri/tauri.conf.json
+
+          # Cargo.toml — only the first version = "..." line (package version)
+          sed -i '0,/^version = ".*"/s/^version = ".*"/version = "'"$VER"'"/' src-tauri/Cargo.toml
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate Cargo.lock
+        run: cd src-tauri && cargo update --workspace
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: bump version to ${{ steps.version.outputs.tag }}"
+          else
+            echo "No changes to commit — aborting to prevent tagging unbumped code"
+            exit 1
+          fi
+
+      - name: Tag and push
+        run: |
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin main
+          git push origin "${{ steps.version.outputs.tag }}"
