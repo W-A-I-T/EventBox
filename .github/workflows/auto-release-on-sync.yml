@@ -5,11 +5,14 @@ name: Auto-release on sync
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   auto-tag:
-    # Only run for auto-sync commits (prevents infinite loops from the version bump commit)
-    if: startsWith(github.event.head_commit.message, 'chore: auto-sync')
+    # Only run for auto-sync commits OR manual dispatch (prevents infinite loops from the version bump commit)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.head_commit.message, 'chore: auto-sync')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -65,7 +68,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
           if ! git diff --cached --quiet; then
             git commit -m "chore: bump version to ${{ steps.version.outputs.tag }}"
