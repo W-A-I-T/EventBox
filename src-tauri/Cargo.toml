@@ -1,6 +1,6 @@
 [package]
 name = "eventbox-desktop"
-version = "0.3.1"
+version = "0.3.2"
 description = "EventBox — LAN Authority Server for dance competitions"
 authors = ["DanceFlowControl"]
 license = "MIT"
