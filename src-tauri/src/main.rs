@@ -66,6 +66,7 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
             // Read stdout in background to capture room code
             if let Some(stdout) = child.stdout.take() {
                 let app_handle = app.clone();
+                let state_ref = app.state::<Mutex<ServerState>>();
                 std::thread::spawn(move || {
                     let reader = BufReader::new(stdout);
                     for line in reader.lines().map_while(Result::ok) {
@@ -75,7 +76,6 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                             if let Some(code) = line.split("Room code:").nth(1) {
                                 let code = code.trim().to_string();
                                 {
-                                    let state_ref = app_handle.state::<Mutex<ServerState>>();
                                     let mut s = state_ref.lock().unwrap();
                                     s.room_code = Some(code.clone());
                                 }
