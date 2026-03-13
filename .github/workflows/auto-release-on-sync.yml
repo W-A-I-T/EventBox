@@ -55,8 +55,11 @@ jobs:
           # Cargo.toml — only the first version = "..." line (package version)
           sed -i '0,/^version = ".*"/s/^version = ".*"/version = "'"$VER"'"/' src-tauri/Cargo.toml
 
-          # Regenerate Cargo.lock to match the new version
-          (cd src-tauri && cargo update --workspace)
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate Cargo.lock
+        run: cd src-tauri && cargo update --workspace
 
       - name: Commit version bump
         run: |
@@ -68,4 +71,5 @@ jobs:
       - name: Tag and push
         run: |
           git tag "${{ steps.version.outputs.tag }}"
-          git push origin main --tags
+          git push origin main
+          git push origin "${{ steps.version.outputs.tag }}"
