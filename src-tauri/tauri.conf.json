@@ -36,7 +36,7 @@
     "updater": {
       "active": true,
       "dialog": true,
-      "pubkey": "YOUR_UPDATER_SIGNATURE_PUBKEY_HERE",
+      "pubkey": "RWTGCyaDOwshhJ7M737DWPAgAhB7pG4lrN9+zGUIVOO9lswpfjbldOAZ",
       "endpoints": [
         "https://github.com/W-A-I-T/EventBox/releases/latest/download/latest.json"
       ],
