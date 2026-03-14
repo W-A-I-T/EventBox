@@ -33,6 +33,17 @@
         "resources/eventbox-server*"
       ]
     },
+    "updater": {
+      "active": true,
+      "dialog": true,
+      "pubkey": "RWTGCyaDOwshhJ7M737DWPAgAhB7pG4lrN9+zGUIVOO9lswpfjbldOAZ",
+      "endpoints": [
+        "https://github.com/W-A-I-T/EventBox/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    },
     "allowlist": {
       "all": false,
       "shell": {
@@ -45,6 +56,9 @@
         "all": true,
         "exit": true,
         "relaunch": true
+      },
+      "dialog": {
+        "all": true
       }
     },
     "windows": [
