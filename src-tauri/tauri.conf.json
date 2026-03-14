@@ -36,7 +36,7 @@
     "updater": {
       "active": true,
       "dialog": true,
-      "pubkey": "RWTJEpWxUIpyfvDlEsM1mBhOMhfcBHoobUhUVuV9Uw4E3UWGK6G5bHSz",
+      "pubkey": "RWSB64F5e55Nx6hiKzS8AsWEB933xqNGwaKVS1HxVmFXwBWJh5lRUQak",
       "endpoints": [
         "https://github.com/W-A-I-T/EventBox/releases/latest/download/latest.json"
       ],
