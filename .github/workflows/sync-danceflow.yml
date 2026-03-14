@@ -121,6 +121,10 @@ jobs:
 
       - name: Auto-merge sync PR
         if: steps.create-pr.outputs.pull-request-number
-        run: gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --squash --auto
+        run: |
+          PR=${{ steps.create-pr.outputs.pull-request-number }}
+          # Try auto-merge first (requires branch protection with required checks).
+          # Fall back to an immediate squash merge when auto-merge is unavailable.
+          gh pr merge "$PR" --squash --auto || gh pr merge "$PR" --squash
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
