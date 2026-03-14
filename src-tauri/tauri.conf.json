@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "EventBox",
-    "version": "0.3.7"
+    "version": "0.3.8"
   },
   "tauri": {
     "bundle": {
@@ -36,7 +36,7 @@
     "updater": {
       "active": true,
       "dialog": true,
-      "pubkey": "RWSB64F5e55Nx6hiKzS8AsWEB933xqNGwaKVS1HxVmFXwBWJh5lRUQak",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM3NEQ5RTdCNzk4MUVCODEKUldTQjY0RjVlNTVOeDZoaUt6UzhBc1dFQjkzM3hxTkd3YUtWUzFIeFZtRlh3QldKaDVsUlVRYWsK",
       "endpoints": [
         "https://github.com/W-A-I-T/EventBox/releases/latest/download/latest.json"
       ],
