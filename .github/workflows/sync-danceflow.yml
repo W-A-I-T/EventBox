@@ -50,6 +50,8 @@ jobs:
           FILE_MAP["public/eventbox/server.ts"]="src-tauri/resources/server.ts"
           FILE_MAP["desktop/src-tauri/src/main.rs"]="src-tauri/src/main.rs"
           FILE_MAP["desktop/src/dashboard.html"]="src/index.html"
+          FILE_MAP["desktop/src-tauri/tauri.conf.json"]="src-tauri/tauri.conf.json"
+          FILE_MAP["desktop/src-tauri/Cargo.toml"]="src-tauri/Cargo.toml"
 
           # Optional filter from workflow_dispatch input
           FILTER="${{ github.event.inputs.files }}"

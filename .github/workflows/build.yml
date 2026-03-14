@@ -69,6 +69,8 @@ jobs:
         run: cd src-tauri && cargo tauri build
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.platform == 'ubuntu-22.04' && '1.85.0' || 'stable' }}
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
 
       - name: Rename artifacts to friendly names
         shell: bash
@@ -77,10 +79,17 @@ jobs:
           if [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
             cp src-tauri/target/release/bundle/deb/*.deb dist/EventBox-Linux.deb
             cp src-tauri/target/release/bundle/appimage/*.AppImage dist/EventBox-Linux.AppImage
+            # Copy .sig files for updater
+            cp src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz dist/EventBox-Linux.AppImage.tar.gz 2>/dev/null || true
+            cp src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig dist/EventBox-Linux.AppImage.tar.gz.sig 2>/dev/null || true
           elif [ "${{ matrix.platform }}" = "windows-latest" ]; then
             cp src-tauri/target/release/bundle/msi/*.msi dist/EventBox-Windows.msi
+            cp src-tauri/target/release/bundle/msi/*.msi.zip dist/EventBox-Windows.msi.zip 2>/dev/null || true
+            cp src-tauri/target/release/bundle/msi/*.msi.zip.sig dist/EventBox-Windows.msi.zip.sig 2>/dev/null || true
           elif [ "${{ matrix.platform }}" = "macos-latest" ]; then
             cp src-tauri/target/release/bundle/dmg/*.dmg dist/EventBox-Mac.dmg
+            cp src-tauri/target/release/bundle/macos/*.app.tar.gz dist/EventBox-Mac.app.tar.gz 2>/dev/null || true
+            cp src-tauri/target/release/bundle/macos/*.app.tar.gz.sig dist/EventBox-Mac.app.tar.gz.sig 2>/dev/null || true
           fi
 
       - name: Upload artifacts
@@ -106,6 +115,49 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Generate latest.json for updater
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          REPO="W-A-I-T/EventBox"
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
+
+          # Read signatures (empty string if file missing — updater skips that platform)
+          WIN_SIG=$(cat artifacts/EventBox-windows-latest/EventBox-Windows.msi.zip.sig 2>/dev/null || echo "")
+          MAC_SIG=$(cat artifacts/EventBox-macos-latest/EventBox-Mac.app.tar.gz.sig 2>/dev/null || echo "")
+          LIN_SIG=$(cat artifacts/EventBox-ubuntu-22.04/EventBox-Linux.AppImage.tar.gz.sig 2>/dev/null || echo "")
+
+          # Use jq to generate valid JSON (handles newlines/special chars in signatures)
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "See release notes at $RELEASE_URL" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg win_sig "$WIN_SIG" \
+            --arg base "$BASE" \
+            --arg mac_sig "$MAC_SIG" \
+            --arg lin_sig "$LIN_SIG" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "windows-x86_64": {
+                  signature: $win_sig,
+                  url: ($base + "/EventBox-Windows.msi.zip")
+                },
+                "darwin-aarch64": {
+                  signature: $mac_sig,
+                  url: ($base + "/EventBox-Mac.app.tar.gz")
+                },
+                "linux-x86_64": {
+                  signature: $lin_sig,
+                  url: ($base + "/EventBox-Linux.AppImage.tar.gz")
+                }
+              }
+            }' > artifacts/latest.json
 
       - name: Build release notes
         shell: bash
