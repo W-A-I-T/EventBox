@@ -123,6 +123,7 @@ jobs:
           VERSION="${TAG#v}"
           REPO="W-A-I-T/EventBox"
           BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
 
           # Read signatures (empty string if file missing — updater skips that platform)
           WIN_SIG=$(cat artifacts/EventBox-windows-latest/EventBox-Windows.msi.zip.sig 2>/dev/null || echo "")
@@ -130,7 +131,7 @@ jobs:
           LIN_SIG=$(cat artifacts/EventBox-ubuntu-22.04/EventBox-Linux.AppImage.tar.gz.sig 2>/dev/null || echo "")
 
           printf '{\n  "version": "%s",\n  "notes": "See release notes at %s",\n  "pub_date": "%s",\n  "platforms": {\n    "windows-x86_64": {\n      "signature": "%s",\n      "url": "%s/EventBox-Windows.msi.zip"\n    },\n    "darwin-aarch64": {\n      "signature": "%s",\n      "url": "%s/EventBox-Mac.app.tar.gz"\n    },\n    "linux-x86_64": {\n      "signature": "%s",\n      "url": "%s/EventBox-Linux.AppImage.tar.gz"\n    }\n  }\n}\n' \
-            "$VERSION" "$BASE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$VERSION" "$RELEASE_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             "$WIN_SIG" "$BASE" \
             "$MAC_SIG" "$BASE" \
             "$LIN_SIG" "$BASE" \
