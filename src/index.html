@@ -297,6 +297,7 @@
         runningCard.classList.remove('hidden');
 
         document.getElementById('room-code').textContent = roomCode;
+        document.getElementById('status-text').textContent = 'Running';
         document.getElementById('detail-port').textContent = port;
         document.getElementById('detail-event').textContent = eventId;
 
@@ -321,6 +322,14 @@
 
         // QR Code (simple inline generator)
         generateQR();
+      } else if (serverRunning && !roomCode) {
+        // Server spawned but room code not yet received
+        setupCard.classList.add('hidden');
+        runningCard.classList.remove('hidden');
+        document.getElementById('room-code').textContent = '......';
+        document.getElementById('status-text').textContent = 'Starting…';
+        document.getElementById('detail-port').textContent = port;
+        document.getElementById('detail-event').textContent = eventId;
       } else {
         setupCard.classList.remove('hidden');
         runningCard.classList.add('hidden');

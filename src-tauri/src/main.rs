@@ -90,6 +90,27 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                 });
             }
 
+            // Read stderr for error reporting
+            if let Some(stderr) = child.stderr.take() {
+                let app_handle2 = app.clone();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stderr);
+                    let mut error_buf = String::new();
+                    for line in reader.lines().map_while(Result::ok) {
+                        eprintln!("[EventBox stderr] {}", line);
+                        error_buf.push_str(&line);
+                        error_buf.push('\n');
+                    }
+                    // Process exited — if we collected errors, notify frontend
+                    if !error_buf.is_empty() {
+                        let _ = app_handle2.emit_all("server-status", serde_json::json!({
+                            "running": false,
+                            "error": error_buf.trim(),
+                        }));
+                    }
+                });
+            }
+
             s.child = Some(child);
 
             // Update tray
