@@ -70,7 +70,7 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.platform == 'ubuntu-22.04' && '1.85.0' || 'stable' }}
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+          TAURI_KEY_PASSWORD: ""
 
       - name: Rename artifacts to friendly names
         shell: bash
