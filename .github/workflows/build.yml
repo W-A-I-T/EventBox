@@ -119,6 +119,10 @@ jobs:
           else
             CHANGES=$(git log --pretty=format:"- %s" "${TAG}" | grep -v "^- chore:" || true)
           fi
+          # Escape markdown-special characters (pipes can break tables if
+          # commit messages are ever rendered inside one; backticks are safe
+          # in bullet lists but we escape pipes out of caution).
+          CHANGES=$(echo "$CHANGES" | sed 's/|/\\|/g')
           if [ -z "$CHANGES" ]; then
             CHANGES="- Maintenance and bug fixes"
           fi
