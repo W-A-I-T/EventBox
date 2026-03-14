@@ -97,13 +97,54 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout (for changelog generation)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Build release notes
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+
+          # Collect commit messages since previous tag (skip chore: commits)
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGES=$(git log --pretty=format:"- %s" "${PREV_TAG}..${TAG}" | grep -v "^- chore:" || true)
+          else
+            CHANGES=$(git log --pretty=format:"- %s" "${TAG}" | grep -v "^- chore:" || true)
+          fi
+          if [ -z "$CHANGES" ]; then
+            CHANGES="- Maintenance and bug fixes"
+          fi
+
+          # Build release notes matching the v0.2.0 format
+          {
+            echo "## Downloads"
+            echo ""
+            echo "| Platform | Download |"
+            echo "|----------|----------|"
+            echo "| **Windows** | [EventBox-Windows.msi](https://github.com/W-A-I-T/EventBox/releases/download/${TAG}/EventBox-Windows.msi) |"
+            echo "| **macOS (Apple Silicon)** | [EventBox-Mac.dmg](https://github.com/W-A-I-T/EventBox/releases/download/${TAG}/EventBox-Mac.dmg) |"
+            echo "| **Linux (.deb)** | [EventBox-Linux.deb](https://github.com/W-A-I-T/EventBox/releases/download/${TAG}/EventBox-Linux.deb) |"
+            echo "| **Linux (AppImage)** | [EventBox-Linux.AppImage](https://github.com/W-A-I-T/EventBox/releases/download/${TAG}/EventBox-Linux.AppImage) |"
+            echo ""
+            echo "## What's New"
+            echo ""
+            echo "$CHANGES"
+            echo ""
+            echo "## Install"
+            echo ""
+            echo "Download the installer for your platform, double-click to install, paste your Event ID, and click Start. No terminal or dependencies needed."
+          } > release_notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
-          generate_release_notes: true
+          body_path: release_notes.md
