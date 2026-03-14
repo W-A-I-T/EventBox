@@ -1,6 +1,6 @@
 [package]
 name = "eventbox-desktop"
-version = "0.3.4"
+version = "0.1.0"
 description = "EventBox — LAN Authority Server for dance competitions"
 authors = ["DanceFlowControl"]
 license = "MIT"
@@ -10,7 +10,7 @@ edition = "2021"
 tauri-build = { version = "1", features = [] }
 
 [dependencies]
-tauri = { version = "1", features = [ "process-all", "shell-open", "system-tray", "updater"] }
+tauri = { version = "1", features = ["process-all", "shell-open", "system-tray", "updater"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 local-ip-address = "0.6"
