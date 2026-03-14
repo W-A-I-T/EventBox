@@ -50,10 +50,9 @@ jobs:
           FILE_MAP["public/eventbox/server.ts"]="src-tauri/resources/server.ts"
           FILE_MAP["desktop/src-tauri/src/main.rs"]="src-tauri/src/main.rs"
           FILE_MAP["desktop/src/dashboard.html"]="src/index.html"
-          # NOTE: tauri.conf.json is NOT synced because the repos need different
-          # "resources" values (DFC uses server.ts, EventBox uses eventbox-server*).
-          # Sync it manually when updater/allowlist/window config changes.
-          FILE_MAP["desktop/src-tauri/Cargo.toml"]="src-tauri/Cargo.toml"
+          # NOTE: tauri.conf.json and Cargo.toml are NOT synced because the repos
+          # need different values (resources pattern, version number).
+          # Sync them manually when dependencies or config changes.
 
           # Optional filter from workflow_dispatch input
           FILTER="${{ github.event.inputs.files }}"
