@@ -338,24 +338,37 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                         error_buf.push_str(&line);
                         error_buf.push('\n');
                     }
-                    // Always emit server-status when stderr pipe closes
-                    // (i.e. the server process has exited). If there was
-                    // no stderr output, report a generic crash message so
-                    // the frontend is never left in a "Starting..." limbo.
-                    let error_msg = if error_buf.trim().is_empty() {
-                        "Server process exited unexpectedly with no output.\n\
-                         The bundled server binary may be missing or incompatible with your system."
-                            .to_string()
-                    } else {
-                        error_buf.trim().to_string()
+                    // Check whether stop_server() already ran (intentional stop).
+                    // stop_server() calls child.take(), setting it to None,
+                    // before killing the process. If child is already None,
+                    // the stop was intentional and we should NOT emit an error.
+                    let was_intentional = {
+                        let state_ref = app_handle2.state::<Mutex<ServerState>>();
+                        let s = state_ref.lock().unwrap();
+                        s.child.is_none()
                     };
-                    let _ = app_handle2.emit_all(
-                        "server-status",
-                        serde_json::json!({
-                            "running": false,
-                            "error": error_msg,
-                        }),
-                    );
+
+                    if was_intentional {
+                        // Intentional stop — don't emit a spurious error.
+                        // stop_server() already emitted { running: false }.
+                    } else {
+                        // Unexpected exit — always emit an error so the
+                        // frontend is never left in a "Starting..." limbo.
+                        let error_msg = if error_buf.trim().is_empty() {
+                            "Server process exited unexpectedly with no output.\n\
+                             The bundled server binary may be missing or incompatible with your system."
+                                .to_string()
+                        } else {
+                            error_buf.trim().to_string()
+                        };
+                        let _ = app_handle2.emit_all(
+                            "server-status",
+                            serde_json::json!({
+                                "running": false,
+                                "error": error_msg,
+                            }),
+                        );
+                    }
                 });
             }
 
