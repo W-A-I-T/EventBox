@@ -413,6 +413,7 @@
         startTimeout = setTimeout(() => {
           if (starting && !roomCode) {
             starting = false;
+            serverRunning = false;
             showError('Server did not respond in time. The bundled server binary may be missing or crashed.\nCheck the app logs for details.');
             updateUI();
           }
