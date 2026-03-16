@@ -6,11 +6,23 @@ authors = ["DanceFlowControl"]
 license = "MIT"
 edition = "2021"
 
+[lib]
+name = "eventbox_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "eventbox-desktop"
+path = "src/main.rs"
+
 [build-dependencies]
-tauri-build = { version = "1", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "1", features = [ "dialog-all", "process-all", "shell-open", "system-tray", "updater"] }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 local-ip-address = "0.6"
