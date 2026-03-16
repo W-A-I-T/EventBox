@@ -144,7 +144,7 @@ fn which_deno() -> Option<PathBuf> {
 
 /// Return the Rust target triple at compile time for sidecar name matching.
 fn tauri_target_triple() -> &'static str {
-    option_env!("TAURI_TARGET_TRIPLE").unwrap_or("unknown-unknown-unknown")
+    option_env!("TAURI_ENV_TARGET_TRIPLE").unwrap_or("unknown-unknown-unknown")
 }
 
 // ---------------------------------------------------------------------------
