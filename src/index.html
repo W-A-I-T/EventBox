@@ -275,7 +275,7 @@
           })
           .catch((err) => {
             starting = false;
-            showError(String(err));
+            showError(String(err), true);
             updateUI();
           });
       } else {
@@ -351,8 +351,10 @@
       }
     }
 
+    let errorTimeout = null;
     function showError(msg, persistent) {
       const el = document.getElementById('setup-error');
+      if (errorTimeout) { clearTimeout(errorTimeout); errorTimeout = null; }
       el.innerHTML = '';
       const text = document.createElement('div');
       text.textContent = msg;
@@ -366,7 +368,7 @@
       }
       el.classList.remove('hidden');
       if (!persistent) {
-        setTimeout(() => el.classList.add('hidden'), 5000);
+        errorTimeout = setTimeout(() => { el.classList.add('hidden'); errorTimeout = null; }, 5000);
       }
     }
 
