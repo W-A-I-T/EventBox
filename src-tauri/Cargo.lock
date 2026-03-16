@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "eventbox-desktop"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "local-ip-address",
  "serde",
