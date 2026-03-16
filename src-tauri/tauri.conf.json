@@ -30,7 +30,8 @@
         "minimumSystemVersion": "10.15"
       },
       "resources": [
-        "resources/eventbox-server*"
+        "resources/eventbox-server*",
+        "resources/server.ts"
       ],
       "deb": {
         "depends": [
