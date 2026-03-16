@@ -13,6 +13,6 @@
     "tauri:build": "npm run compile-server && cd src-tauri && cargo tauri build"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^1.6.0"
+    "@tauri-apps/cli": "^2"
   }
 }

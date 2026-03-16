@@ -328,7 +328,7 @@
 
     if (isTauri) {
       const { listen } = window.__TAURI__.event;
-      const { invoke } = window.__TAURI__.tauri;
+      const { invoke } = window.__TAURI__.core;
 
       listen('server-status', (e) => {
         const d = e.payload;
@@ -403,7 +403,7 @@
       roomCode = '';
       eventId = id;
       if (isTauri) {
-        const { invoke } = window.__TAURI__.tauri;
+        const { invoke } = window.__TAURI__.core;
         starting = true;
         updateUI();
         // Set the safety-net timeout BEFORE invoking so it cannot be
@@ -432,7 +432,7 @@
 
     function handleStop() {
       if (isTauri) {
-        const { invoke } = window.__TAURI__.tauri;
+        const { invoke } = window.__TAURI__.core;
         invoke('stop_server_cmd').catch(() => {});
       }
       serverRunning = false;

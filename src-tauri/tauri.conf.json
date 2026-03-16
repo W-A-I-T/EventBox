@@ -1,76 +1,15 @@
 {
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "EventBox",
+  "version": "0.3.14",
+  "identifier": "app.danceflowcontrol.eventbox",
   "build": {
-    "distDir": "../src",
-    "devPath": "../src",
+    "frontendDist": "../src",
     "beforeDevCommand": "",
     "beforeBuildCommand": ""
   },
-  "package": {
-    "productName": "EventBox",
-    "version": "0.3.14"
-  },
-  "tauri": {
-    "bundle": {
-      "active": true,
-      "identifier": "app.danceflowcontrol.eventbox",
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ],
-      "targets": "all",
-      "windows": {
-        "wix": {
-          "language": "en-US"
-        }
-      },
-      "macOS": {
-        "minimumSystemVersion": "10.15"
-      },
-      "resources": [
-        "resources/eventbox-server*",
-        "resources/server.ts"
-      ],
-      "deb": {
-        "depends": [
-          "libwebkit2gtk-4.0-37 (>= 2.36.0)",
-          "libgtk-3-0",
-          "libayatana-appindicator3-1"
-        ],
-        "section": "utils",
-        "priority": "optional"
-      }
-    },
-    "updater": {
-      "active": true,
-      "dialog": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM3NEQ5RTdCNzk4MUVCODEKUldTQjY0RjVlNTVOeDZoaUt6UzhBc1dFQjkzM3hxTkd3YUtWUzFIeFZtRlh3QldKaDVsUlVRYWsK",
-      "endpoints": [
-        "https://github.com/W-A-I-T/EventBox/releases/latest/download/latest.json"
-      ],
-      "windows": {
-        "installMode": "passive"
-      }
-    },
-    "allowlist": {
-      "all": false,
-      "shell": {
-        "all": false,
-        "open": true,
-        "execute": false,
-        "sidecar": false
-      },
-      "process": {
-        "all": true,
-        "exit": true,
-        "relaunch": true
-      },
-      "dialog": {
-        "all": true
-      }
-    },
+  "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "EventBox",
@@ -82,13 +21,54 @@
         "center": true
       }
     ],
-    "systemTray": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true,
-      "menuOnLeftClick": false
-    },
     "security": {
       "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "targets": "all",
+    "createUpdaterArtifacts": "v1Compatible",
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "resources": [
+      "resources/eventbox-server*",
+      "resources/server.ts"
+    ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1"
+        ],
+        "section": "utils",
+        "priority": "optional"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM3NEQ5RTdCNzk4MUVCODEKUldTQjY0RjVlNTVOeDZoaUt6UzhBc1dFQjkzM3hxTkd3YUtWUzFIeFZtRlh3QldKaDVsUlVRYWsK",
+      "endpoints": [
+        "https://github.com/W-A-I-T/EventBox/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
