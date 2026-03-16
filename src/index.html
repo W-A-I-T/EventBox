@@ -411,6 +411,7 @@
         // the .then() callback runs.
         if (startTimeout) clearTimeout(startTimeout);
         startTimeout = setTimeout(() => {
+        startTimeout = setTimeout(() => {
           if (starting && !roomCode) {
             starting = false;
             serverRunning = false;
