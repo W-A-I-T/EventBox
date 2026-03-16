@@ -94,7 +94,7 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
 
 /// Find the sidecar Deno binary that Tauri bundles via `externalBin`.
 /// Tauri renames sidecars to `{name}-{target_triple}[.exe]` at build time.
-fn resolve_sidecar_deno_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+fn resolve_sidecar_deno_path(_app: &tauri::AppHandle) -> Option<PathBuf> {
     // The sidecar lives next to the app executable after bundling
     let exe_dir = std::env::current_exe()
         .ok()
@@ -129,7 +129,7 @@ fn which_deno() -> Option<PathBuf> {
 
 /// Return the Rust target triple at compile time for sidecar name matching.
 fn tauri_target_triple() -> &'static str {
-    env!("TAURI_TARGET_TRIPLE", "unknown-unknown-unknown")
+    option_env!("TAURI_TARGET_TRIPLE").unwrap_or("unknown-unknown-unknown")
 }
 
 // ---------------------------------------------------------------------------
