@@ -48,11 +48,19 @@ jobs:
           # ---------------------------------------------------------------
           declare -A FILE_MAP
           FILE_MAP["public/eventbox/server.ts"]="src-tauri/resources/server.ts"
-          FILE_MAP["desktop/src-tauri/src/main.rs"]="src-tauri/src/main.rs"
-          FILE_MAP["desktop/src/dashboard.html"]="src/index.html"
-          # NOTE: tauri.conf.json and Cargo.toml are NOT synced because the repos
-          # need different values (resources pattern, version number).
-          # Sync them manually when dependencies or config changes.
+          # NOTE: main.rs and dashboard.html are NOT synced because the
+          # DanceFlowControl source of truth is Tauri v1 while EventBox has
+          # been migrated to Tauri v2.  The v1 code uses APIs that don't
+          # exist in v2 (SystemTray, emit_all, path_resolver,
+          # window.__TAURI__.tauri.invoke).  These files must be migrated
+          # manually when updated upstream.
+          #   v1 source:  desktop/src-tauri/src/main.rs
+          #   v2 target:  src-tauri/src/lib.rs  (main.rs is a thin wrapper)
+          #   v1 source:  desktop/src/dashboard.html
+          #   v2 target:  src/index.html  (uses __TAURI__.core.invoke)
+          #
+          # tauri.conf.json and Cargo.toml are also NOT synced because the
+          # repos need different values (resources pattern, version, deps).
 
           # Optional filter from workflow_dispatch input
           FILTER="${{ github.event.inputs.files }}"
