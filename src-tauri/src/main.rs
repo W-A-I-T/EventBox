@@ -191,6 +191,7 @@ fn check_deno(app_handle: tauri::AppHandle) -> DenoStatus {
 
     // Check sidecar first
     if let Some(sidecar) = resolve_sidecar_deno_path(&app_handle) {
+        ensure_executable(&sidecar);
         let version = get_deno_version(&sidecar);
         if !version.is_empty() {
             return DenoStatus {
