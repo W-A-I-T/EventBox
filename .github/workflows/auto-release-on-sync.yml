@@ -1,6 +1,7 @@
-name: Auto-release on sync
+name: Auto-release on push to main
 
-# Creates a new patch release whenever an auto-sync commit lands on main.
+# Creates a new patch release whenever a commit lands on main.
+# The version bump commit is excluded to prevent infinite loops.
 # The version bump commit + tag push triggers the existing Build & Release workflow.
 on:
   push:
@@ -9,10 +10,10 @@ on:
 
 jobs:
   auto-tag:
-    # Only run for auto-sync commits OR manual dispatch (prevents infinite loops from the version bump commit)
+    # Run for all pushes to main EXCEPT the version-bump commits this workflow creates (prevents infinite loops)
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      startsWith(github.event.head_commit.message, 'chore: auto-sync')
+      !startsWith(github.event.head_commit.message, 'chore: bump version')
     runs-on: ubuntu-latest
     permissions:
       contents: write
