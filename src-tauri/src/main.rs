@@ -21,6 +21,11 @@ struct ServerState {
     room_code: Option<String>,
     port: u16,
     event_id: String,
+    /// Monotonically increasing counter bumped each time a new server
+    /// process is spawned.  The stderr reader thread captures the
+    /// generation at spawn time and compares it later to detect whether
+    /// the process it was monitoring is still the "current" one.
+    generation: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +332,14 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                 });
             }
 
-            // Read stderr for error reporting
+            // Read stderr for error reporting.
+            // Bump the generation counter and capture it so the
+            // thread can later tell whether this specific process
+            // instance is still the "current" one (guards against
+            // restart races where stop→start stores a new child
+            // before the old stderr thread runs its check).
+            s.generation += 1;
+            let spawn_generation = s.generation;
             if let Some(stderr) = child.stderr.take() {
                 let app_handle2 = app.clone();
                 std::thread::spawn(move || {
@@ -338,20 +350,18 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                         error_buf.push_str(&line);
                         error_buf.push('\n');
                     }
-                    // Check whether stop_server() already ran (intentional stop).
-                    // stop_server() calls child.take(), setting it to None,
-                    // before killing the process. If child is already None,
-                    // the stop was intentional and we should NOT emit an error.
-                    let was_intentional = {
+                    // Decide whether this exit was intentional / stale:
+                    //  - stop_server() calls child.take() → child is None.
+                    //  - A restart bumps the generation counter, so
+                    //    spawn_generation != current generation.
+                    // In either case we should NOT emit an error.
+                    let suppress = {
                         let state_ref = app_handle2.state::<Mutex<ServerState>>();
                         let s = state_ref.lock().unwrap();
-                        s.child.is_none()
+                        s.child.is_none() || s.generation != spawn_generation
                     };
 
-                    if was_intentional {
-                        // Intentional stop — don't emit a spurious error.
-                        // stop_server() already emitted { running: false }.
-                    } else {
+                    if !suppress {
                         // Unexpected exit — always emit an error so the
                         // frontend is never left in a "Starting..." limbo.
                         let error_msg = if error_buf.trim().is_empty() {
@@ -520,6 +530,7 @@ fn main() {
         room_code: None,
         port,
         event_id: event_id.clone(),
+        generation: 0,
     });
 
     tauri::Builder::default()
