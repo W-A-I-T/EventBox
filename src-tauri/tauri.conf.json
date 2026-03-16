@@ -30,8 +30,18 @@
         "minimumSystemVersion": "10.15"
       },
       "resources": [
-        "resources/eventbox-server*"
-      ]
+        "resources/eventbox-server*",
+        "resources/server.ts"
+      ],
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.0-37 (>= 2.36.0)",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1"
+        ],
+        "section": "utils",
+        "priority": "optional"
+      }
     },
     "updater": {
       "active": true,
