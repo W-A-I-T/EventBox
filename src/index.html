@@ -145,20 +145,67 @@
       border-radius: 8px;
       font-size: .8rem;
       margin-top: .75rem;
-      text-align: center;
+      display: flex;
+      align-items: flex-start;
+      gap: .5rem;
     }
-    .error-msg .dismiss-btn {
-      display: inline-block;
-      margin-top: .5rem;
-      padding: .25rem .75rem;
-      background: #991b1b;
+    .error-text {
+      flex: 1;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+    .error-dismiss {
+      background: none;
+      border: none;
       color: #fca5a5;
-      border: 1px solid #fca5a580;
-      border-radius: 4px;
-      font-size: .75rem;
+      font-size: 1.1rem;
       cursor: pointer;
+      padding: 0 .25rem;
+      line-height: 1;
+      opacity: .7;
+      flex-shrink: 0;
     }
-    .error-msg .dismiss-btn:hover { background: #b91c1c; }
+    .error-dismiss:hover { opacity: 1; }
+
+    /* Deno status banner */
+    .deno-status {
+      width: 100%;
+      max-width: 440px;
+      margin-bottom: 1rem;
+      border-radius: 8px;
+      padding: .75rem 1rem;
+      font-size: .8rem;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+    .deno-status.ok {
+      background: #14532d;
+      color: #86efac;
+    }
+    .deno-status.missing {
+      background: #7f1d1d;
+      color: #fca5a5;
+    }
+    .deno-status .deno-icon {
+      font-size: 1rem;
+      flex-shrink: 0;
+    }
+    .deno-status .deno-info {
+      flex: 1;
+    }
+    .deno-status .deno-info a {
+      color: #93c5fd;
+      text-decoration: underline;
+    }
+    .deno-status .deno-info a:hover {
+      color: #bfdbfe;
+    }
+    .deno-status .deno-source {
+      font-size: .7rem;
+      opacity: .7;
+      margin-left: .25rem;
+    }
 
     .hidden { display: none !important; }
   </style>
@@ -169,6 +216,12 @@
     <p>LAN Authority Server</p>
   </div>
 
+  <!-- Deno status banner -->
+  <div id="deno-banner" class="deno-status hidden">
+    <span class="deno-icon" id="deno-icon"></span>
+    <span class="deno-info" id="deno-info"></span>
+  </div>
+
   <!-- Setup card (when no event ID) -->
   <div class="card" id="setup-card">
     <p class="label">Event Configuration</p>
@@ -177,7 +230,10 @@
       <input type="text" id="event-id-input" placeholder="Paste event ID…">
       <button class="btn btn-primary" id="start-btn" onclick="handleStart()">Start</button>
     </div>
-    <div id="setup-error" class="error-msg hidden"></div>
+    <div id="setup-error" class="error-msg hidden">
+      <span class="error-text"></span>
+      <button class="error-dismiss" onclick="dismissError()" title="Dismiss">&times;</button>
+    </div>
   </div>
 
   <!-- Running card -->
@@ -216,13 +272,14 @@
     let port = 8787;
     let localIps = [];
     let eventId = '';
+    let denoAvailable = null; // null = unknown, true/false after check
 
     // ---- Tauri event listeners ----
-    // Check if running inside Tauri
     const isTauri = window.__TAURI__ !== undefined;
 
     if (isTauri) {
       const { listen } = window.__TAURI__.event;
+      const { invoke } = window.__TAURI__.tauri;
 
       listen('server-status', (e) => {
         const d = e.payload;
@@ -232,10 +289,7 @@
         if (d.room_code) roomCode = d.room_code;
         if (d.port) port = d.port;
         if (d.event_id) eventId = d.event_id;
-        if (d.error) {
-          // Server-status errors from the backend are critical — keep visible
-          showError(d.error, true);
-        }
+        if (d.error) showError(d.error);
         updateUI();
       });
 
@@ -243,10 +297,40 @@
         localIps = e.payload.ips || [];
         updateUI();
       });
+
+      // Check Deno availability on load
+      invoke('check_deno').then((status) => {
+        denoAvailable = status.available;
+        updateDenoBanner(status);
+      }).catch(() => {
+        // Command not available (old binary) — hide banner
+      });
     } else {
-      // Standalone mode (opened in browser for dev)
-      document.getElementById('setup-card').querySelector('p').textContent = 
+      document.getElementById('setup-card').querySelector('p').textContent =
         'Development mode — this UI is designed to run inside the EventBox desktop app.';
+    }
+
+    // ---- Deno banner ----
+    function updateDenoBanner(status) {
+      const banner = document.getElementById('deno-banner');
+      const icon = document.getElementById('deno-icon');
+      const info = document.getElementById('deno-info');
+
+      banner.classList.remove('hidden', 'ok', 'missing');
+
+      if (status.available) {
+        banner.classList.add('ok');
+        icon.textContent = '✓';
+        const sourceLabel = status.source === 'sidecar' ? 'bundled' : 'system';
+        info.innerHTML = `${status.version} <span class="deno-source">(${sourceLabel})</span>`;
+      } else {
+        banner.classList.add('missing');
+        icon.textContent = '⚠';
+        info.innerHTML =
+          'Deno runtime not found. The server cannot start without it.<br>' +
+          '<a href="' + status.install_url + '" target="_blank">Install Deno →</a> ' +
+          'or reinstall EventBox to get the bundled version.';
+      }
     }
 
     // ---- Actions ----
@@ -257,6 +341,7 @@
         showError('Please enter an Event ID');
         return;
       }
+      dismissError();
       roomCode = '';
       eventId = id;
       if (isTauri) {
@@ -268,14 +353,14 @@
             startTimeout = setTimeout(() => {
               if (starting) {
                 starting = false;
-                showError('Server did not respond in time. It may have crashed.');
+                showError('Server did not respond in time. The bundled server binary may be missing or crashed.\nCheck the app logs for details.');
                 updateUI();
               }
             }, 10000);
           })
           .catch((err) => {
             starting = false;
-            showError(String(err), true);
+            showError(String(err));
             updateUI();
           });
       } else {
@@ -335,10 +420,8 @@
           ipList.appendChild(li);
         }
 
-        // QR Code (simple inline generator)
         generateQR();
       } else if (serverRunning && !roomCode) {
-        // Server spawned but room code not yet received
         setupCard.classList.add('hidden');
         runningCard.classList.remove('hidden');
         document.getElementById('room-code').textContent = '......';
@@ -351,25 +434,17 @@
       }
     }
 
-    let errorTimeout = null;
-    function showError(msg, persistent) {
+    function showError(msg) {
+      dismissError();
       const el = document.getElementById('setup-error');
-      if (errorTimeout) { clearTimeout(errorTimeout); errorTimeout = null; }
-      el.innerHTML = '';
-      const text = document.createElement('div');
-      text.textContent = msg;
-      el.appendChild(text);
-      if (persistent) {
-        const btn = document.createElement('button');
-        btn.className = 'dismiss-btn';
-        btn.textContent = 'Dismiss';
-        btn.onclick = () => el.classList.add('hidden');
-        el.appendChild(btn);
-      }
+      el.querySelector('.error-text').textContent = msg;
       el.classList.remove('hidden');
-      if (!persistent) {
-        errorTimeout = setTimeout(() => { el.classList.add('hidden'); errorTimeout = null; }, 5000);
-      }
+    }
+
+    function dismissError() {
+      const el = document.getElementById('setup-error');
+      el.classList.add('hidden');
+      el.querySelector('.error-text').textContent = '';
     }
 
     function showToast(msg) {
@@ -385,7 +460,6 @@
         ? `http://${localIps[0]}:${port}/staff?join=${roomCode}`
         : `http://localhost:${port}/staff?join=${roomCode}`;
 
-      // Try loading qrcode lib from CDN
       if (window.qrcode) {
         drawRealQR(url);
         return;
