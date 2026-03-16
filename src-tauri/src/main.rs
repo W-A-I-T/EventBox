@@ -30,36 +30,72 @@ fn build_tray() -> SystemTray {
     SystemTray::new().with_menu(menu)
 }
 
+fn resolve_server_binary(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let name = if cfg!(target_os = "windows") {
+        "resources/eventbox-server.exe"
+    } else {
+        "resources/eventbox-server"
+    };
+    if let Some(path) = app.path_resolver().resolve_resource(name) {
+        if path.exists() {
+            // Ensure the binary is executable on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o755);
+                    let _ = std::fs::set_permissions(&path, perms);
+                }
+            }
+            return Some(path);
+        }
+    }
+    None
+}
+
 fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<(), String> {
     let mut s = state.lock().unwrap();
     if s.child.is_some() {
         return Ok(()); // already running
     }
 
-    // Resolve bundled server.ts
-    let resource_path = app
-        .path_resolver()
-        .resolve_resource("resources/server.ts")
-        .expect("Failed to resolve server.ts resource");
-
     let port = s.port;
     let event_id = s.event_id.clone();
 
-    let mut cmd = Command::new("deno");
-    cmd.args([
-        "run",
-        "--allow-net",
-        "--allow-read",
-        "--allow-write",
-        "--allow-env",
-        "--allow-ffi",
-        "--unstable-ffi",
-        resource_path.to_str().unwrap(),
-    ])
-    .env("EVENTBOX_PORT", port.to_string())
-    .env("EVENTBOX_EVENT_ID", &event_id)
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+    // Prefer the compiled server binary (no Deno required).
+    // Fall back to `deno run server.ts` for local development.
+    let mut cmd;
+    if let Some(binary_path) = resolve_server_binary(app) {
+        cmd = Command::new(binary_path);
+    } else if let Some(resource_path) = app
+        .path_resolver()
+        .resolve_resource("resources/server.ts")
+    {
+        cmd = Command::new("deno");
+        cmd.args([
+            "run",
+            "--allow-net",
+            "--allow-read",
+            "--allow-write",
+            "--allow-env",
+            "--allow-ffi",
+            "--unstable-ffi",
+            resource_path.to_str().unwrap(),
+        ]);
+    } else {
+        let error_msg = "Server binary not found. The application may not be installed correctly.".to_string();
+        let _ = app.emit_all("server-status", serde_json::json!({
+            "running": false,
+            "error": &error_msg,
+        }));
+        return Err(error_msg);
+    }
+
+    cmd.env("EVENTBOX_PORT", port.to_string())
+        .env("EVENTBOX_EVENT_ID", &event_id)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     match cmd.spawn() {
         Ok(mut child) => {
@@ -133,8 +169,14 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
             Ok(())
         }
         Err(e) => {
-            let error_msg = format!("Failed to start: {}. Is Deno installed?", e);
-            eprintln!("Failed to start Deno server: {}", e);
+            let error_msg = if e.kind() == std::io::ErrorKind::NotFound {
+                "Could not start EventBox server — the server binary was not found. \
+                 If you are running a development build, make sure Deno is installed \
+                 (https://deno.land) and run 'npm run compile-server' first.".to_string()
+            } else {
+                format!("Failed to start EventBox server: {}", e)
+            };
+            eprintln!("Failed to start server: {}", e);
             let _ = app.emit_all("server-status", serde_json::json!({
                 "running": false,
                 "error": &error_msg,
