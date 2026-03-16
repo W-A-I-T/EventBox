@@ -418,13 +418,20 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
 
 fn stop_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
     let mut s = state.lock().unwrap();
+    let was_running = s.child.is_some();
     if let Some(mut child) = s.child.take() {
         let _ = child.kill();
         let _ = child.wait();
     }
     s.room_code = None;
     update_tray(app, false);
-    let _ = app.emit_all("server-status", serde_json::json!({ "running": false }));
+    // Only emit the event if a server was actually running. This avoids
+    // sending a bare { running: false } during set_event_id_and_start()
+    // when no previous server existed, which would disarm the frontend's
+    // safety-net timeout.
+    if was_running {
+        let _ = app.emit_all("server-status", serde_json::json!({ "running": false }));
+    }
 }
 
 fn update_tray(app: &tauri::AppHandle, running: bool) {

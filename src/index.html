@@ -333,10 +333,13 @@
       listen('server-status', (e) => {
         const d = e.payload;
         // Only consider startup complete when we have a room_code (success)
-        // or the server has definitively stopped (running === false).
-        // The initial { running: true } event fires before the room code
-        // is known; clearing the timeout here would disarm the safety net.
-        if (d.room_code || d.running === false) {
+        // or the server has definitively stopped in a meaningful way.
+        // During a start sequence, stop_server() fires a bare { running: false }
+        // before the new server launches — ignore that transient event.
+        // Only clear the timeout when:
+        //  - we got a room_code (success), OR
+        //  - running === false AND (there's an error OR we weren't starting)
+        if (d.room_code || (d.running === false && (d.error || !starting))) {
           starting = false;
           if (startTimeout) { clearTimeout(startTimeout); startTimeout = null; }
         }
