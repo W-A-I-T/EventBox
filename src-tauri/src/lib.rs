@@ -64,7 +64,14 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
     }
 
     // 2. Compiled binary in Tauri resources
+    //    bundle.resources preserves relative paths, so "resources/eventbox-server*"
+    //    ends up at <resource_dir>/resources/eventbox-server.
     if let Ok(resource_dir) = app.path().resource_dir() {
+        let candidate = resource_dir.join("resources").join(bin_name);
+        if candidate.exists() {
+            return Ok(ServerBinary::Native(candidate));
+        }
+        // Fallback: check directly in resource dir (flat layout / dev builds)
         let candidate = resource_dir.join(bin_name);
         if candidate.exists() {
             return Ok(ServerBinary::Native(candidate));
