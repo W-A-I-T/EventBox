@@ -12,10 +12,12 @@ No terminal. No dependencies. Just download, install, and go.
 |----------|----------|----------------|
 | **Windows** | [EventBox-Windows.msi](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Windows.msi) | Double-click the `.msi` file |
 | **macOS** | [EventBox-Mac.dmg](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Mac.dmg) | Open the `.dmg`, drag EventBox to Applications |
+| **Linux (AppImage)** ⭐ | [EventBox-Linux.AppImage](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Linux.AppImage) | Right-click → Properties → Permissions → Allow executing, then double-click |
 | **Linux (.deb)** | [EventBox-Linux.deb](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Linux.deb) | `sudo dpkg -i EventBox-Linux.deb` or double-click |
-| **Linux (AppImage)** | [EventBox-Linux.AppImage](https://github.com/W-A-I-T/EventBox/releases/latest/download/EventBox-Linux.AppImage) | Right-click → Properties → Permissions → Allow executing, then double-click |
 
 > **Everything is bundled.** No Deno, no Rust, no Node.js needed on the user's machine.
+
+> **Linux users:** The **AppImage** is the recommended format. It works on all distributions and supports auto-updates. The `.deb` package requires `libwebkit2gtk-4.0` which is only available on Ubuntu 22.04 and earlier. **Ubuntu 24.04+ users must use the AppImage** (the `.deb` will fail to install due to the missing `libwebkit2gtk-4.0-37` package).
 
 ---
 
@@ -167,6 +169,8 @@ EventBox/
 | Build fails on Linux | Install webkit2gtk dev packages (see Prerequisites) |
 | Server won't start | Check that port 8787 isn't already in use |
 | App won't open on macOS | Right-click > Open (first time only, to bypass Gatekeeper) |
+| `.deb` install fails with `libwebkit2gtk-4.0-37` error | You are on Ubuntu 24.04+. Use the **AppImage** instead |
+| No update notification | Auto-update only works with AppImage on Linux. `.deb` users will see an in-app banner when a new version is available |
 
 ---
 
