@@ -53,15 +53,21 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
     if let Ok(exe_dir) = std::env::current_exe().map(|p| p.parent().unwrap_or(&p).to_path_buf()) {
         let candidate = exe_dir.join(bin_name);
         if candidate.exists() {
+            ensure_executable(&candidate);
             return Ok(ServerBinary::Native(candidate));
         }
     }
 
     // 2. Compiled binary in Tauri resources
-    if let Some(resource_dir) = app.path_resolver().resolve_resource("") {
-        let candidate = resource_dir.join(bin_name);
-        if candidate.exists() {
-            return Ok(ServerBinary::Native(candidate));
+    //    tauri.conf.json bundles "resources/eventbox-server*", which preserves
+    //    the resources/ prefix. Try the prefixed path first, then the bare name
+    //    for dev builds or alternative bundle layouts.
+    for resource_path in [format!("resources/{}", bin_name), bin_name.to_string()] {
+        if let Some(candidate) = app.path_resolver().resolve_resource(&resource_path) {
+            if candidate.exists() {
+                ensure_executable(&candidate);
+                return Ok(ServerBinary::Native(candidate));
+            }
         }
     }
 
@@ -74,6 +80,7 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
     // 3. Bundled sidecar Deno
     let sidecar_deno = resolve_sidecar_deno_path(app);
     if let (Some(deno_path), Some(ts_path)) = (&sidecar_deno, &server_ts) {
+        ensure_executable(deno_path);
         return Ok(ServerBinary::SidecarDeno(deno_path.clone(), ts_path.clone()));
     }
 
@@ -116,6 +123,25 @@ fn resolve_sidecar_deno_path(_app: &tauri::AppHandle) -> Option<PathBuf> {
 
     candidates.into_iter().find(|p| p.exists())
 }
+
+/// Ensure a binary has the executable permission on Unix.
+/// Tauri bundles resources as data files; the execute bit may be stripped
+/// during packaging (especially on .deb and AppImage targets).
+#[cfg(unix)]
+fn ensure_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let mut perms = metadata.permissions();
+        let mode = perms.mode();
+        if mode & 0o111 == 0 {
+            perms.set_mode(mode | 0o755);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn ensure_executable(_path: &std::path::Path) {}
 
 /// Check if `deno` is available on the system PATH.
 fn which_deno() -> Option<PathBuf> {
