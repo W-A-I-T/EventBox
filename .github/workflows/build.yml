@@ -16,7 +16,7 @@ jobs:
             rust-target: x86_64-unknown-linux-gnu
             deno-target: x86_64-unknown-linux-gnu
             server-output: src-tauri/resources/eventbox-server
-            tauri-rustup: '1.85.0'
+            tauri-rustup: stable
           - platform: windows-latest
             rust-target: x86_64-pc-windows-msvc
             deno-target: x86_64-pc-windows-msvc
