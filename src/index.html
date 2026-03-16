@@ -593,9 +593,14 @@
     function showUpdateBanner(newVersion) {
       const banner = document.getElementById('update-banner');
       const info = document.getElementById('update-info');
-      info.innerHTML =
-        'Version <strong>' + newVersion + '</strong> is available! ' +
-        '<a href="' + RELEASES_URL + '" target="_blank">Download update</a>';
+      const versionText = 'Version ' + newVersion + ' is available! ';
+      info.textContent = '';
+      info.appendChild(document.createTextNode(versionText));
+      const link = document.createElement('a');
+      link.href = RELEASES_URL;
+      link.target = '_blank';
+      link.textContent = 'Download update';
+      info.appendChild(link);
       banner.classList.remove('hidden');
     }
 
