@@ -21,6 +21,11 @@ struct ServerState {
     room_code: Option<String>,
     port: u16,
     event_id: String,
+    /// Monotonically increasing counter bumped each time a new server
+    /// process is spawned.  The stderr reader thread captures the
+    /// generation at spawn time and compares it later to detect whether
+    /// the process it was monitoring is still the "current" one.
+    generation: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +305,14 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                 });
             }
 
-            // Read stderr for error reporting
+            // Read stderr for error reporting.
+            // Bump the generation counter and capture it so the
+            // thread can later tell whether this specific process
+            // instance is still the "current" one (guards against
+            // restart races where stop→start stores a new child
+            // before the old stderr thread runs its check).
+            s.generation += 1;
+            let spawn_generation = s.generation;
             if let Some(stderr) = child.stderr.take() {
                 let app_handle2 = app.clone();
                 std::thread::spawn(move || {
@@ -311,12 +323,32 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                         error_buf.push_str(&line);
                         error_buf.push('\n');
                     }
-                    if !error_buf.is_empty() {
+                    // Decide whether this exit was intentional / stale:
+                    //  - stop_server() calls child.take() → child is None.
+                    //  - A restart bumps the generation counter, so
+                    //    spawn_generation != current generation.
+                    // In either case we should NOT emit an error.
+                    let suppress = {
+                        let state_ref = app_handle2.state::<Mutex<ServerState>>();
+                        let s = state_ref.lock().unwrap();
+                        s.child.is_none() || s.generation != spawn_generation
+                    };
+
+                    if !suppress {
+                        // Unexpected exit — always emit an error so the
+                        // frontend is never left in a "Starting..." limbo.
+                        let error_msg = if error_buf.trim().is_empty() {
+                            "Server process exited unexpectedly with no output.\n\
+                             The bundled server binary may be missing or incompatible with your system."
+                                .to_string()
+                        } else {
+                            error_buf.trim().to_string()
+                        };
                         let _ = app_handle2.emit_all(
                             "server-status",
                             serde_json::json!({
                                 "running": false,
-                                "error": error_buf.trim(),
+                                "error": error_msg,
                             }),
                         );
                     }
@@ -359,13 +391,20 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
 
 fn stop_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
     let mut s = state.lock().unwrap();
+    let was_running = s.child.is_some();
     if let Some(mut child) = s.child.take() {
         let _ = child.kill();
         let _ = child.wait();
     }
     s.room_code = None;
     update_tray(app, false);
-    let _ = app.emit_all("server-status", serde_json::json!({ "running": false }));
+    // Only emit the event if a server was actually running. This avoids
+    // sending a bare { running: false } during set_event_id_and_start()
+    // when no previous server existed, which would disarm the frontend's
+    // safety-net timeout.
+    if was_running {
+        let _ = app.emit_all("server-status", serde_json::json!({ "running": false }));
+    }
 }
 
 fn update_tray(app: &tauri::AppHandle, running: bool) {
@@ -471,6 +510,7 @@ fn main() {
         room_code: None,
         port,
         event_id: event_id.clone(),
+        generation: 0,
     });
 
     tauri::Builder::default()

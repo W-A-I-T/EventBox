@@ -207,6 +207,48 @@
       margin-left: .25rem;
     }
 
+    /* Update banner */
+    .update-banner {
+      width: 100%;
+      max-width: 440px;
+      margin-bottom: 1rem;
+      border-radius: 8px;
+      padding: .75rem 1rem;
+      font-size: .8rem;
+      background: #1e3a5f;
+      color: #93c5fd;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+    .update-banner .update-icon {
+      font-size: 1rem;
+      flex-shrink: 0;
+    }
+    .update-banner .update-info {
+      flex: 1;
+    }
+    .update-banner a {
+      color: #60a5fa;
+      text-decoration: underline;
+      font-weight: 600;
+    }
+    .update-banner a:hover {
+      color: #93c5fd;
+    }
+    .update-banner .update-dismiss {
+      background: none;
+      border: none;
+      color: #93c5fd;
+      font-size: 1.1rem;
+      cursor: pointer;
+      padding: 0 .25rem;
+      line-height: 1;
+      opacity: .7;
+      flex-shrink: 0;
+    }
+    .update-banner .update-dismiss:hover { opacity: 1; }
+
     .hidden { display: none !important; }
   </style>
 </head>
@@ -214,6 +256,13 @@
   <div class="header">
     <h1>EventBox</h1>
     <p>LAN Authority Server</p>
+  </div>
+
+  <!-- Update available banner -->
+  <div id="update-banner" class="update-banner hidden">
+    <span class="update-icon">&#x2B06;</span>
+    <span class="update-info" id="update-info"></span>
+    <button class="update-dismiss" onclick="dismissUpdate()" title="Dismiss">&times;</button>
   </div>
 
   <!-- Deno status banner -->
@@ -283,9 +332,18 @@
 
       listen('server-status', (e) => {
         const d = e.payload;
-        starting = false;
-        if (startTimeout) { clearTimeout(startTimeout); startTimeout = null; }
-        serverRunning = !!d.running;
+        // Only consider startup complete when we have a room_code (success)
+        // or the server has definitively stopped in a meaningful way.
+        // During a start sequence, stop_server() fires a bare { running: false }
+        // before the new server launches — ignore that transient event.
+        // Only clear the timeout when:
+        //  - we got a room_code (success), OR
+        //  - running === false AND (there's an error OR we weren't starting)
+        if (d.room_code || (d.running === false && (d.error || !starting))) {
+          starting = false;
+          if (startTimeout) { clearTimeout(startTimeout); startTimeout = null; }
+        }
+        if (d.running !== undefined) serverRunning = !!d.running;
         if (d.room_code) roomCode = d.room_code;
         if (d.port) port = d.port;
         if (d.event_id) eventId = d.event_id;
@@ -348,18 +406,22 @@
         const { invoke } = window.__TAURI__.tauri;
         starting = true;
         updateUI();
+        // Set the safety-net timeout BEFORE invoking so it cannot be
+        // bypassed by a fast server-status event that arrives before
+        // the .then() callback runs.
+        if (startTimeout) clearTimeout(startTimeout);
+        startTimeout = setTimeout(() => {
+          if (starting && !roomCode) {
+            starting = false;
+            serverRunning = false;
+            showError('Server did not respond in time. The bundled server binary may be missing or crashed.\nCheck the app logs for details.');
+            updateUI();
+          }
+        }, 15000);
         invoke('set_event_id_and_start', { eventId: id })
-          .then(() => {
-            startTimeout = setTimeout(() => {
-              if (starting) {
-                starting = false;
-                showError('Server did not respond in time. The bundled server binary may be missing or crashed.\nCheck the app logs for details.');
-                updateUI();
-              }
-            }, 10000);
-          })
           .catch((err) => {
             starting = false;
+            if (startTimeout) { clearTimeout(startTimeout); startTimeout = null; }
             showError(String(err));
             updateUI();
           });
@@ -494,6 +556,60 @@
       ctx.fillText(url, 90, 130);
       ctx.fillText('(QR unavailable offline)', 90, 150);
     }
+
+    // ---- Manual update check ----
+    // The built-in Tauri updater only works for AppImage on Linux.
+    // This manual check works for all installation types (.deb, .msi, .dmg, AppImage).
+    const UPDATE_JSON_URL = 'https://github.com/W-A-I-T/EventBox/releases/latest/download/latest.json';
+    const RELEASES_URL = 'https://github.com/W-A-I-T/EventBox/releases/latest';
+    // Embedded at build time from tauri.conf.json
+    const CURRENT_VERSION = '0.3.12';
+
+    function compareVersions(a, b) {
+      const pa = a.split('.').map(Number);
+      const pb = b.split('.').map(Number);
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const na = pa[i] || 0;
+        const nb = pb[i] || 0;
+        if (na > nb) return 1;
+        if (na < nb) return -1;
+      }
+      return 0;
+    }
+
+    function checkForUpdates() {
+      fetch(UPDATE_JSON_URL, { cache: 'no-store' })
+        .then(r => r.ok ? r.json() : Promise.reject('fetch failed'))
+        .then(data => {
+          if (data.version && compareVersions(data.version, CURRENT_VERSION) > 0) {
+            showUpdateBanner(data.version);
+          }
+        })
+        .catch(() => {
+          // Offline or fetch failed — silently ignore
+        });
+    }
+
+    function showUpdateBanner(newVersion) {
+      const banner = document.getElementById('update-banner');
+      const info = document.getElementById('update-info');
+      const versionText = 'Version ' + newVersion + ' is available! ';
+      info.textContent = '';
+      info.appendChild(document.createTextNode(versionText));
+      const link = document.createElement('a');
+      link.href = RELEASES_URL;
+      link.target = '_blank';
+      link.textContent = 'Download update';
+      info.appendChild(link);
+      banner.classList.remove('hidden');
+    }
+
+    function dismissUpdate() {
+      document.getElementById('update-banner').classList.add('hidden');
+    }
+
+    // Run update check after a short delay (non-blocking, works offline)
+    setTimeout(checkForUpdates, 3000);
 
     // Initial render
     updateUI();
