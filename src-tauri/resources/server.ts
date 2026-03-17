@@ -1385,6 +1385,36 @@ handleAuth();
     if (body.tables.some((t: { name?: string }) => t?.name === "event")) {
       refreshCachedEventName();
     }
+
+    // Auto-create staff sessions from cloud event_roles + staff_profiles
+    const rolesTable = body.tables.find((t: { name?: string }) => t?.name === "event_roles");
+    const profilesTable = body.tables.find((t: { name?: string }) => t?.name === "staff_profiles");
+    if (rolesTable && Array.isArray(rolesTable.data)) {
+      const profileMap = new Map<string, { display_name?: string; email?: string }>();
+      if (profilesTable && Array.isArray(profilesTable.data)) {
+        for (const p of profilesTable.data) {
+          if (p.user_id) profileMap.set(p.user_id, p);
+        }
+      }
+      for (const er of rolesTable.data) {
+        if (!er.user_id || !er.role) continue;
+        const profile = profileMap.get(er.user_id);
+        const staffName = profile?.display_name || profile?.email || `Staff (${er.role})`;
+        // Upsert: don't overwrite existing sessions that may have different tokens
+        const existing = queryRows(`SELECT id FROM staff_sessions WHERE event_id=? AND role=? AND staff_name=?`, [EVENT_ID, er.role, staffName]);
+        if (existing.length === 0) {
+          const sessionId = crypto.randomUUID();
+          const joinCode = crypto.randomUUID().slice(0, 6).toUpperCase();
+          const expiresAt = Date.now() + TOKEN_TTL_MS;
+          queryRun(
+            `INSERT INTO staff_sessions(id, event_id, role, staff_name, join_code, device_id, token, expires_at)
+             VALUES(?,?,?,?,?,?,?,?)`,
+            [sessionId, EVENT_ID, er.role, staffName, joinCode, `cloud_${er.user_id}`, crypto.randomUUID(), expiresAt],
+          );
+        }
+      }
+    }
+
     return json({ ok: true, synced: count });
   }
 
@@ -1881,6 +1911,7 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
     const role = url.searchParams.get("role") || "marshal";
     const eventId = url.searchParams.get("eventId") || EVENT_ID;
     const token = url.searchParams.get("token") || "";
+    const kioskId = url.searchParams.get("kiosk") || "";
 
     const portalTitle: Record<string, string> = {
       scanner: "Check-in Scanner",
@@ -1900,6 +1931,7 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
     const safeToken = JSON.stringify(token);
     const safeEventId = JSON.stringify(eventId);
     const safeRole = JSON.stringify(role);
+    const safeKioskId = JSON.stringify(kioskId);
 
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1986,14 +2018,29 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2
   <span style="margin-left:auto" id="footer-sync"></span>
 </div>
 <script>
+// Kiosk mode: bypass token auth, use localStorage session
+const KIOSK_ID=${safeKioskId};
+if(KIOSK_ID){
+  // Load kiosk session from localStorage (set by ChasséFlow KioskStaffSetup)
+  const ks=localStorage.getItem('kiosk_session_'+KIOSK_ID);
+  if(ks){
+    try{
+      const sess=JSON.parse(ks);
+      const initials=(sess.volunteer_name||'?').split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);
+      document.getElementById('staff-initials').textContent=initials;
+      document.getElementById('staff-title').textContent=sess.volunteer_name+' — '+(sess.role||'').replace(/_/g,' ');
+      document.getElementById('role-badge').textContent='kiosk';
+    }catch{}
+  }
+}
 // Fix #2/#19: Token from URL → sessionStorage, strip from URL
 (function(){
   const urlToken=${safeToken};
-  if(urlToken){sessionStorage.setItem('eb_portal_token',urlToken);history.replaceState(null,'',location.pathname+'?role='+encodeURIComponent(${safeRole})+'&eventId='+encodeURIComponent(${safeEventId}));}
+  if(urlToken){sessionStorage.setItem('eb_portal_token',urlToken);history.replaceState(null,'',location.pathname+'?role='+encodeURIComponent(${safeRole})+'&eventId='+encodeURIComponent(${safeEventId})+(KIOSK_ID?'&kiosk='+encodeURIComponent(KIOSK_ID):''));}
 })();
 let TOKEN=sessionStorage.getItem('eb_portal_token')||'';
 // Auto-recover session from localStorage if sessionStorage token is empty
-if(!TOKEN){(async function recoverSession(){
+if(!TOKEN&&!KIOSK_ID){(async function recoverSession(){
   const saved=localStorage.getItem('eventbox_staff_session');
   if(!saved)return;
   try{
@@ -2009,7 +2056,8 @@ if(!TOKEN){(async function recoverSession(){
     window.location.reload();
   }catch{}
 })()}
-if(!TOKEN&&!localStorage.getItem('eventbox_staff_session')){
+// For kiosk mode without token, still allow data loading (read-only via admin token or skip auth)
+if(!TOKEN&&!KIOSK_ID&&!localStorage.getItem('eventbox_staff_session')){
   document.getElementById('portal-root').innerHTML='<div class="empty"><p>Session expired</p><a href="/staff/join" style="color:#818cf8">Rejoin</a></div>';
 }
 const EVENT_ID=${safeEventId};
