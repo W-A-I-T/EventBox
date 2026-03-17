@@ -32,6 +32,7 @@ const ADMIN_SECRET =
   Deno.env.get("EVENTBOX_ADMIN_SECRET") ??
   ROOM_CODE;
 const EVENT_ID = Deno.env.get("EVENTBOX_EVENT_ID") ?? "";
+const CHASSEFLOW_API = Deno.env.get("EVENTBOX_CHASSEFLOW_API") ?? "https://dance-flow-control.lovable.app";
 const SECRET =
   Deno.env.get("EVENTBOX_SECRET") ??
   crypto.randomUUID().replace(/-/g, "");
@@ -168,6 +169,20 @@ CREATE TABLE IF NOT EXISTS published_results (
   published_by   TEXT,
   published_at_ms INTEGER NOT NULL,
   PRIMARY KEY(event_id, heat_id)
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  event_id         TEXT NOT NULL,
+  credential_id    TEXT NOT NULL,
+  amount_cents     INTEGER,
+  currency         TEXT DEFAULT 'USD',
+  payment_method   TEXT,
+  terminal_id      TEXT,
+  external_ref     TEXT,
+  status           TEXT NOT NULL,
+  confirmed_by     TEXT,
+  confirmed_at_ms  INTEGER NOT NULL,
+  PRIMARY KEY(event_id, credential_id)
 );
 
 CREATE TABLE IF NOT EXISTS ref_data (
@@ -307,7 +322,7 @@ async function authenticate(req: Request): Promise<TokenClaims | null> {
 // Role-based op permissions (Fix #1: server-side authorization)
 // ---------------------------------------------------------------------------
 const ROLE_OP_PERMISSIONS: Record<string, string[]> = {
-  scanner: ["checkin"],
+  scanner: ["checkin", "payment_confirmed"],
   judge: ["score", "score_submission"],
   marshal: ["marshal", "scratch", "heat_state"],
   deck_captain: ["marshal", "heat_state"],
@@ -315,11 +330,11 @@ const ROLE_OP_PERMISSIONS: Record<string, string[]> = {
   scrutineer: ["result_publish"],
   announcer: ["nowplaying"],
   dj: ["nowplaying"],
-  chairman: ["chairman_override", "heat_state", "marshal", "scratch", "nowplaying"],
+  chairman: ["chairman_override", "heat_state", "marshal", "scratch", "nowplaying", "payment_confirmed"],
   videographer: [],
   event_admin: [
     "checkin", "score", "score_submission", "marshal", "heat_state",
-    "scratch", "nowplaying", "result_publish", "chairman_override",
+    "scratch", "nowplaying", "result_publish", "chairman_override", "payment_confirmed",
   ],
 };
 
@@ -369,7 +384,7 @@ type Op = {
 
 type ApplyResult =
   | { accepted: true }
-  | { accepted: false; reason: "duplicate" | "fsm_rejected" | "invalid" | "wrong_event" | "unauthorized" };
+  | { accepted: false; reason: "duplicate" | "fsm_rejected" | "invalid" | "wrong_event" | "unauthorized"; detail?: Record<string, unknown> };
 
 // ---------------------------------------------------------------------------
 // WebSocket management
@@ -458,14 +473,15 @@ function applyOp(op: Op): ApplyResult {
     case "marshal": {
       if (p?.heat_entry_id && p?.status) {
         const rows = queryRows(
-          `SELECT status FROM marshal_status WHERE event_id=? AND heat_entry_id=?`,
+          `SELECT status, updated_by FROM marshal_status WHERE event_id=? AND heat_entry_id=?`,
           [op.event_id, p.heat_entry_id],
         );
         const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+        const currentUpdatedBy = rows.length > 0 ? String(rows[0][1] ?? "") : "";
 
         if (!isFsmAllowed(currentState, p.status as string)) {
           db.exec("ROLLBACK");
-          return { accepted: false, reason: "fsm_rejected" };
+          return { accepted: false, reason: "fsm_rejected", detail: { current_status: currentState, updated_by: currentUpdatedBy } };
         }
 
         queryRun(
@@ -482,14 +498,15 @@ function applyOp(op: Op): ApplyResult {
     case "heat_state": {
       if (p?.heat_id && p?.status) {
         const rows = queryRows(
-          `SELECT status FROM heat_status WHERE event_id=? AND heat_id=?`,
+          `SELECT status, updated_by FROM heat_status WHERE event_id=? AND heat_id=?`,
           [op.event_id, p.heat_id],
         );
         const currentState = rows.length > 0 ? String(rows[0][0]) : null;
+        const currentUpdatedBy = rows.length > 0 ? String(rows[0][1] ?? "") : "";
 
         if (!isFsmAllowed(currentState, p.status as string)) {
           db.exec("ROLLBACK");
-          return { accepted: false, reason: "fsm_rejected" };
+          return { accepted: false, reason: "fsm_rejected", detail: { current_status: currentState, updated_by: currentUpdatedBy } };
         }
 
         queryRun(
@@ -591,6 +608,33 @@ function applyOp(op: Op): ApplyResult {
            ON CONFLICT(event_id,heat_id) DO UPDATE SET
              status=excluded.status, updated_by=excluded.updated_by, updated_at_ms=excluded.updated_at_ms`,
           [op.event_id, p.heat_id, newStatus, op.actor_device_id ?? null, now],
+        );
+      }
+      break;
+    }
+
+    case "payment_confirmed": {
+      if (p?.credential_id && p?.status) {
+        queryRun(
+          `INSERT INTO payments(event_id, credential_id, amount_cents, currency, payment_method, terminal_id, external_ref, status, confirmed_by, confirmed_at_ms)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(event_id, credential_id) DO UPDATE SET
+             amount_cents=excluded.amount_cents, currency=excluded.currency,
+             payment_method=excluded.payment_method, terminal_id=excluded.terminal_id,
+             external_ref=excluded.external_ref, status=excluded.status,
+             confirmed_by=excluded.confirmed_by, confirmed_at_ms=excluded.confirmed_at_ms`,
+          [
+            op.event_id,
+            p.credential_id,
+            p.amount_cents ?? null,
+            p.currency ?? "USD",
+            p.payment_method ?? null,
+            p.terminal_id ?? null,
+            p.external_ref ?? null,
+            p.status,
+            op.actor_device_id ?? null,
+            now,
+          ],
         );
       }
       break;
@@ -789,8 +833,9 @@ summary:hover{color:#94a3b8}
 
 <!-- Sync status bar -->
 <div class="sync-bar">
-  <span class="sync-dot ${Number(heatCount) > 0 ? "ok" : "none"}"></span>
-  <span class="sync-info"><strong>${heatCount} heats</strong> synced · last sync ${escapeHtml(lastSyncStr)}</span>
+  <span class="sync-dot ${Number(heatCount) > 0 ? "ok" : "none"}" id="sync-dot"></span>
+  <span class="sync-info" id="sync-info"><strong>${heatCount} heats</strong> synced · last sync ${escapeHtml(lastSyncStr)}</span>
+  <button class="sync-btn" id="cloud-sync-btn" onclick="syncFromCloud()">☁ Sync from cloud</button>
   <button class="sync-btn" onclick="refreshSync()">↻ Refresh stats</button>
 </div>
 
@@ -1000,6 +1045,30 @@ async function importFile(input){
 async function refreshSync(){
   showToast('Refreshing local stats…');
   setTimeout(()=>location.reload(),500);
+}
+
+async function syncFromCloud(){
+  const btn=document.getElementById('cloud-sync-btn');
+  const info=document.getElementById('sync-info');
+  const dot=document.getElementById('sync-dot');
+  btn.disabled=true;btn.textContent='Syncing…';
+  info.innerHTML='<strong>Pulling from ChasseFlow…</strong>';
+  dot.className='sync-dot none';
+  try{
+    const r=await fetch('/api/sync-from-cloud',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken}});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||'Sync failed');
+    info.innerHTML='<strong>'+d.synced+' tables synced</strong> &middot; just now';
+    dot.className='sync-dot ok';
+    showToast('Synced '+d.synced+' tables from cloud!');
+    setTimeout(()=>location.reload(),2000);
+  }catch(e){
+    info.innerHTML='<strong style="color:#f87171">Sync failed:</strong> '+esc(e.message);
+    dot.className='sync-dot none';
+    showToast('Sync failed: '+e.message);
+  }finally{
+    btn.disabled=false;btn.textContent='\\u2601 Sync from cloud';
+  }
 }
 
 // --- QR helper ---
@@ -1241,6 +1310,16 @@ handleAuth();
         return json({ data: rows[0][0], fetched_at: rows[0][1] });
       }
 
+      case "payments": {
+        const rows = queryRows(
+          `SELECT credential_id, amount_cents, currency, payment_method, terminal_id, external_ref, status, confirmed_by, confirmed_at_ms FROM payments WHERE event_id=?`,
+          [EVENT_ID],
+        ).map(([credential_id, amount_cents, currency, payment_method, terminal_id, external_ref, status, confirmed_by, confirmed_at_ms]) => ({
+          credential_id, amount_cents, currency, payment_method, terminal_id, external_ref, status, confirmed_by, confirmed_at_ms,
+        }));
+        return json({ event_id: EVENT_ID, payments: rows });
+      }
+
       default:
         return json({ error: `unknown state kind: ${kind}` }, 404);
     }
@@ -1307,6 +1386,62 @@ handleAuth();
       refreshCachedEventName();
     }
     return json({ ok: true, synced: count });
+  }
+
+  // ---- POST /api/sync-from-cloud — Pull ref data from ChasseFlow cloud ----
+  if (url.pathname === "/api/sync-from-cloud" && req.method === "POST") {
+    const claims = await authenticate(req);
+    if (!claims) return json({ error: "unauthorized" }, 401);
+    if (claims.role !== "event_admin") return json({ error: "admin only" }, 403);
+
+    try {
+      const cloudUrl = `${CHASSEFLOW_API}/api/eventbox/export?eventId=${encodeURIComponent(EVENT_ID)}`;
+      const cloudRes = await fetch(cloudUrl, {
+        headers: { "accept": "application/json" },
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!cloudRes.ok) {
+        const errText = await cloudRes.text().catch(() => "");
+        return json({
+          ok: false,
+          error: `ChasseFlow returned ${cloudRes.status}`,
+          detail: errText.slice(0, 500),
+        }, 502);
+      }
+
+      const cloudData = await cloudRes.json();
+
+      if (!cloudData.tables || !Array.isArray(cloudData.tables)) {
+        return json({ ok: false, error: "Unexpected response format from ChasseFlow" }, 502);
+      }
+
+      const now = new Date().toISOString();
+      let syncCount = 0;
+      for (const t of cloudData.tables) {
+        if (!t?.name || t.data === undefined) continue;
+        queryRun(
+          `INSERT INTO ref_data(event_id, table_name, data_json, fetched_at)
+           VALUES (?,?,?,?)
+           ON CONFLICT(event_id, table_name) DO UPDATE SET
+             data_json=excluded.data_json, fetched_at=excluded.fetched_at`,
+          [EVENT_ID, t.name, JSON.stringify(t.data), now],
+        );
+        syncCount++;
+      }
+
+      if (cloudData.tables.some((t: { name?: string }) => t?.name === "event")) {
+        refreshCachedEventName();
+      }
+
+      return json({ ok: true, synced: syncCount, source: CHASSEFLOW_API });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("AbortError") || msg.includes("timeout")) {
+        return json({ ok: false, error: "ChasseFlow unreachable (timeout) — are you connected to the internet?" }, 504);
+      }
+      return json({ ok: false, error: `Sync failed: ${msg}` }, 502);
+    }
   }
 
   // ---- WebSocket ----
@@ -1841,7 +1976,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2
     <button class="refresh-btn" onclick="loadData()">↻</button>
   </div>
 </div>
-<div class="upgrade-banner">Local-only mode — <a href="https://dance-flow-control.lovable.app" target="_blank">open full app</a> when internet is available</div>
+<div class="upgrade-banner" id="upgrade-banner" style="display:none">Local-only mode &mdash; <a href="https://dance-flow-control.lovable.app" target="_blank">open full app</a> for additional features</div>
 <div class="container" id="portal-root">
   <div id="loading"><div class="spinner"></div><p style="margin-top:.75rem;font-size:.85rem">Loading event data…</p></div>
 </div>
@@ -1856,7 +1991,27 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2
   const urlToken=${safeToken};
   if(urlToken){sessionStorage.setItem('eb_portal_token',urlToken);history.replaceState(null,'',location.pathname+'?role='+encodeURIComponent(${safeRole})+'&eventId='+encodeURIComponent(${safeEventId}));}
 })();
-const TOKEN=sessionStorage.getItem('eb_portal_token')||'';
+let TOKEN=sessionStorage.getItem('eb_portal_token')||'';
+// Auto-recover session from localStorage if sessionStorage token is empty
+if(!TOKEN){(async function recoverSession(){
+  const saved=localStorage.getItem('eventbox_staff_session');
+  if(!saved)return;
+  try{
+    const sess=JSON.parse(saved);
+    if(!sess.staff_session_id&&!sess.id)return;
+    const sessionId=sess.staff_session_id||sess.id;
+    const deviceId=localStorage.getItem('device_id')||'';
+    const r=await fetch(BASE+'/auth/refresh',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({staff_session_id:sessionId,device_id:deviceId})});
+    if(!r.ok){localStorage.removeItem('eventbox_staff_session');window.location.href='/staff/join';return}
+    const d=await r.json();
+    sessionStorage.setItem('eb_portal_token',d.token);
+    TOKEN=d.token;
+    window.location.reload();
+  }catch{}
+})()}
+if(!TOKEN&&!localStorage.getItem('eventbox_staff_session')){
+  document.getElementById('portal-root').innerHTML='<div class="empty"><p>Session expired</p><a href="/staff/join" style="color:#818cf8">Rejoin</a></div>';
+}
 const EVENT_ID=${safeEventId};
 const ROLE=${safeRole};
 const BASE=location.origin;
@@ -1932,19 +2087,24 @@ function debouncedLoad(){
 ${role === "scanner" ? `
 let credentials=[];
 let checkins={};
+let payments={};
 let searchTerm='';
 
 async function loadData(){
   try{
-    const [ciRes, credRef]=await Promise.all([
+    const [ciRes, credRef, payRes]=await Promise.all([
       api('/state/checkins'),
-      fetch(BASE+'/state/ref?table=credentials',{headers:AUTH}).then(r=>r.json()).catch(()=>null)
+      fetch(BASE+'/state/ref?table=credentials',{headers:AUTH}).then(r=>r.json()).catch(()=>null),
+      api('/state/payments').catch(()=>({payments:[]}))
     ]);
     // Build lookup
     credentials=[];
     const ciMap={};
     (ciRes.checkins||[]).forEach(c=>ciMap[c.credential_id]=c.status);
     checkins=ciMap;
+    const payMap={};
+    (payRes.payments||[]).forEach(p=>payMap[p.credential_id]=p);
+    payments=payMap;
     // Try to get credentials from ref_data
     if(credRef?.data){
       credentials=typeof credRef.data==='string'?JSON.parse(credRef.data):credRef.data;
@@ -1969,18 +2129,39 @@ function render(){
     html+='<div class="empty"><p style="font-size:1.1rem;margin-bottom:.75rem">📷 No credentials loaded yet</p><p style="color:#94a3b8;font-size:.8rem;line-height:1.6">The event organizer needs to sync credential data from the cloud app.<br>Once synced, attendees will appear here for check-in.</p><p style="color:#4ade80;font-size:.75rem;margin-top:.75rem">✓ You\\'re connected — data will appear automatically.</p></div>';
   }
   unchecked.forEach(c=>{
-    html+='<div class="list-item"><div class="num">'+(c.competitor_number||'—')+'</div><div class="info"><div class="name">'+esc(c.person_name||'Unknown')+'</div><div class="detail">'+esc(c.credential_type||'competitor')+'</div></div><button class="btn btn-check" onclick="doCheckin(\\''+c.id+'\\')">Check In</button></div>';
+    const paid=payments[c.id];
+    const paidBadge=paid&&paid.status==='confirmed'?'<span style="color:#4ade80;font-size:.7rem;margin-left:.5rem">$ Paid</span>':'<span style="color:#f59e0b;font-size:.7rem;margin-left:.5rem">$ Unpaid</span>';
+    const payBtn=(!paid||paid.status!=='confirmed')?'<button class="btn" style="background:#f59e0b;color:#000;margin-right:.25rem;font-size:.75rem;padding:.35rem .6rem" onclick="markPaid(\\''+c.id+'\\')">$ Paid</button>':'';
+    html+='<div class="list-item"><div class="num">'+(c.competitor_number||'—')+'</div><div class="info"><div class="name">'+esc(c.person_name||'Unknown')+'</div><div class="detail">'+esc(c.credential_type||'competitor')+paidBadge+'</div></div>'+payBtn+'<button class="btn btn-check" onclick="doCheckin(\\''+c.id+'\\')">Check In</button></div>';
   });
   checked.forEach(c=>{
-    html+='<div class="list-item" style="opacity:.6"><div class="num">'+(c.competitor_number||'—')+'</div><div class="info"><div class="name">'+esc(c.person_name||'Unknown')+'</div><div class="detail">✅ Checked in</div></div><button class="btn btn-checked" disabled>Done</button></div>';
+    const paid=payments[c.id];
+    const paidBadge=paid&&paid.status==='confirmed'?'<span style="color:#4ade80;font-size:.7rem;margin-left:.5rem">$ Paid</span>':'<span style="color:#f59e0b;font-size:.7rem;margin-left:.5rem">$ Unpaid</span>';
+    html+='<div class="list-item" style="opacity:.6"><div class="num">'+(c.competitor_number||'—')+'</div><div class="info"><div class="name">'+esc(c.person_name||'Unknown')+'</div><div class="detail">✅ Checked in'+paidBadge+'</div></div><button class="btn btn-checked" disabled>Done</button></div>';
   });
   document.getElementById('portal-root').innerHTML=html;
 }
 
 async function doCheckin(credId){
   const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'checkin',created_at_ms:Date.now(),payload:{credential_id:credId,status:'checked_in'}};
+  const result=await submitOp(op);
+  if(result.queued){
+    checkins[credId]='checked_in';
+  }else if(result.ok&&result.results){
+    const r=result.results[0];
+    if(r&&r.accepted){checkins[credId]='checked_in'}
+    else if(r&&(r.reason==='duplicate'||r.reason==='fsm_rejected')){
+      const who=r.detail?.updated_by||'another staff';
+      portalToast('Already checked in by '+who);
+    }
+  }
+  render();
+}
+
+async function markPaid(credId){
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'payment_confirmed',created_at_ms:Date.now(),payload:{credential_id:credId,status:'confirmed',payment_method:'cash'}};
   await submitOp(op);
-  checkins[credId]='checked_in';
+  payments[credId]={credential_id:credId,status:'confirmed'};
   render();
 }
 ` : ""}
@@ -2042,8 +2223,20 @@ function render(){
 
 async function setHeatState(heatId,newStatus){
   const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'heat_state',created_at_ms:Date.now(),payload:{heat_id:heatId,status:newStatus}};
-  await submitOp(op);
-  heatStatuses[heatId]=newStatus;
+  const result=await submitOp(op);
+  if(result.queued){
+    heatStatuses[heatId]=newStatus;
+    portalToast('Queued offline — will sync when reconnected');
+  }else if(result.ok&&result.results){
+    const r=result.results[0];
+    if(r&&r.accepted){heatStatuses[heatId]=newStatus}
+    else if(r&&r.reason==='fsm_rejected'){
+      const who=r.detail?.updated_by||'another marshal';
+      const current=r.detail?.current_status||'already updated';
+      portalToast('Already '+current.replace('_',' ')+' by '+who);
+      await loadData();return;
+    }else if(r&&r.reason==='duplicate'){portalToast('Already recorded')}
+  }
   render();
 }
 ` : ""}
@@ -2117,6 +2310,14 @@ async function loadData(){
 
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
+// Portal toast for feedback
+function portalToast(msg){
+  let t=document.getElementById('portal-toast');
+  if(!t){t=document.createElement('div');t.id='portal-toast';t.style.cssText='position:fixed;bottom:4rem;left:50%;transform:translateX(-50%);background:#334155;color:#e2e8f0;padding:.5rem 1.25rem;border-radius:8px;font-size:.8rem;opacity:0;transition:opacity .3s;pointer-events:none;z-index:100';document.body.appendChild(t)}
+  t.textContent=msg;t.style.opacity='1';
+  setTimeout(()=>{t.style.opacity='0'},3000);
+}
+
 // Populate topbar with staff name from localStorage
 (function(){
   try{
@@ -2132,6 +2333,19 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 // Auto-refresh every 10 seconds
 loadData();
 setInterval(loadData,10000);
+
+// Show upgrade banner only if internet is reachable
+(function checkInternet(){
+  const banner=document.getElementById('upgrade-banner');
+  if(!banner)return;
+  function probe(){
+    fetch('https://dance-flow-control.lovable.app/health',{mode:'no-cors',cache:'no-store'})
+      .then(()=>{banner.style.display=''})
+      .catch(()=>{banner.style.display='none'});
+  }
+  probe();
+  setInterval(probe,60000);
+})();
 
 // Connection health tracking
 let lastPongAt=0;
