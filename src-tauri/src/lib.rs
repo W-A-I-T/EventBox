@@ -120,6 +120,9 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
         "eventbox-server"
     };
 
+    // Compute resource directory candidates once to avoid duplicate logging.
+    let resource_dirs = resource_dir_candidates(app);
+
     let mut tried: Vec<String> = Vec::new();
 
     // 1. Compiled binary next to app executable
@@ -136,7 +139,7 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
     // 2. Compiled binary in resource directories
     //    bundle.resources preserves relative paths, so "resources/eventbox-server*"
     //    ends up at <resource_dir>/resources/eventbox-server.
-    for rd in resource_dir_candidates(app) {
+    for rd in &resource_dirs {
         for sub in ["resources", ""] {
             let candidate = if sub.is_empty() {
                 rd.join(bin_name)
@@ -158,8 +161,8 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
         }
     }
 
-    // Resolve server.ts for Deno-based fallbacks (search all candidate dirs)
-    let server_ts = resource_dir_candidates(app)
+    // Resolve server.ts for Deno-based fallbacks (reuse cached candidate dirs)
+    let server_ts = resource_dirs
         .iter()
         .flat_map(|rd| [rd.join("resources/server.ts"), rd.join("server.ts")])
         .find(|p| p.exists());
