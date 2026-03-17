@@ -42,10 +42,75 @@ enum ServerBinary {
     SystemDeno(PathBuf), // server_ts_path
 }
 
+/// Collects candidate resource directories in priority order.
+///
+/// On Linux .deb installs the bundler places resources under
+/// `/usr/lib/<productName>/` but Tauri's `resource_dir()` resolves using
+/// `package_info.name` which *should* match the productName.  In practice
+/// the canonicalize() call inside Tauri can fail if the directory hasn't
+/// been created yet or if there's a name mismatch.  This helper returns
+/// all plausible directories so callers can search each one.
+fn resource_dir_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    // 1. Tauri's built-in resource_dir (the "official" path)
+    match app.path().resource_dir() {
+        Ok(rd) => {
+            eprintln!("[EventBox] resource_dir() = {}", rd.display());
+            if !dirs.contains(&rd) {
+                dirs.push(rd);
+            }
+        }
+        Err(e) => {
+            eprintln!("[EventBox] resource_dir() error: {e}");
+        }
+    }
+
+    // 2. Linux-specific .deb / AppImage fallback paths
+    //    The .deb bundler uses productName from tauri.conf.json for the
+    //    lib directory (e.g. /usr/lib/EventBox/) while resource_dir() may
+    //    resolve to a different name.  Try the well-known layout.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            // prefix = /usr  when exe = /usr/bin/eventbox-desktop
+            if let Some(prefix) = exe.parent().and_then(|d| d.parent()) {
+                let product = app
+                    .config()
+                    .product_name
+                    .as_deref()
+                    .unwrap_or("EventBox");
+                let exe_stem = exe
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("eventbox-desktop");
+
+                // Collect unique directory names to try
+                let mut names: Vec<&str> = Vec::new();
+                for n in [product, exe_stem, "EventBox", "eventbox-desktop"] {
+                    if !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+
+                for name in &names {
+                    let candidate = prefix.join("lib").join(name);
+                    if !dirs.contains(&candidate) {
+                        dirs.push(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    dirs
+}
+
 /// Resolves the best available server binary in priority order:
 ///
 /// 1. Compiled eventbox-server binary next to app executable
-/// 2. Compiled eventbox-server binary in Tauri resources
+/// 2. Compiled eventbox-server binary in Tauri resource directories
+///    (includes .deb fallback paths on Linux)
 /// 3. Bundled sidecar Deno + resources/server.ts
 /// 4. System Deno (`deno` on PATH) + resources/server.ts
 fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String> {
@@ -55,36 +120,52 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
         "eventbox-server"
     };
 
+    // Compute resource directory candidates once to avoid duplicate logging.
+    let resource_dirs = resource_dir_candidates(app);
+
+    let mut tried: Vec<String> = Vec::new();
+
     // 1. Compiled binary next to app executable
     if let Ok(exe_dir) = std::env::current_exe().map(|p| p.parent().unwrap_or(&p).to_path_buf()) {
         let candidate = exe_dir.join(bin_name);
+        eprintln!("[EventBox] try exe-dir: {}", candidate.display());
+        tried.push(candidate.display().to_string());
         if candidate.exists() {
+            eprintln!("[EventBox] found server binary (exe-dir)");
             return Ok(ServerBinary::Native(candidate));
         }
     }
 
-    // 2. Compiled binary in Tauri resources
+    // 2. Compiled binary in resource directories
     //    bundle.resources preserves relative paths, so "resources/eventbox-server*"
     //    ends up at <resource_dir>/resources/eventbox-server.
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let candidate = resource_dir.join("resources").join(bin_name);
-        if candidate.exists() {
-            return Ok(ServerBinary::Native(candidate));
-        }
-        // Fallback: check directly in resource dir (flat layout / dev builds)
-        let candidate = resource_dir.join(bin_name);
-        if candidate.exists() {
-            return Ok(ServerBinary::Native(candidate));
+    for rd in &resource_dirs {
+        for sub in ["resources", ""] {
+            let candidate = if sub.is_empty() {
+                rd.join(bin_name)
+            } else {
+                rd.join(sub).join(bin_name)
+            };
+
+            let display = candidate.display().to_string();
+            if tried.contains(&display) {
+                continue;
+            }
+
+            eprintln!("[EventBox] try resource: {}", display);
+            tried.push(display);
+            if candidate.exists() {
+                eprintln!("[EventBox] found server binary (resource)");
+                return Ok(ServerBinary::Native(candidate));
+            }
         }
     }
 
-    // Resolve server.ts once for Deno-based paths
-    let server_ts = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|d| d.join("resources/server.ts"))
-        .filter(|p| p.exists());
+    // Resolve server.ts for Deno-based fallbacks (reuse cached candidate dirs)
+    let server_ts = resource_dirs
+        .iter()
+        .flat_map(|rd| [rd.join("resources/server.ts"), rd.join("server.ts")])
+        .find(|p| p.exists());
 
     // 3. Bundled sidecar Deno
     let sidecar_deno = resolve_sidecar_deno_path();
@@ -102,12 +183,15 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
         }
     }
 
-    Err(
+    let msg = format!(
         "Could not find eventbox-server binary or Deno runtime.\n\
-         The bundled Deno sidecar may be missing. Reinstall EventBox or \
-         install Deno manually: https://deno.land/#installation"
-            .into(),
-    )
+         Paths tried:\n  {}\n\n\
+         The bundled server binary may be missing. Reinstall EventBox or \
+         install Deno manually: https://deno.land/#installation",
+        tried.join("\n  ")
+    );
+    eprintln!("[EventBox] {}", msg);
+    Err(msg)
 }
 
 /// Find the sidecar Deno binary that Tauri bundles via `externalBin`.
@@ -237,7 +321,16 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
     let port = s.port;
     let event_id = s.event_id.clone();
 
-    let server_binary = resolve_server_binary(app)?;
+    let server_binary = resolve_server_binary(app).map_err(|e| {
+        let _ = app.emit(
+            "server-status",
+            serde_json::json!({
+                "running": false,
+                "error": &e,
+            }),
+        );
+        e
+    })?;
 
     let deno_args = |ts_path: &std::path::Path| -> Vec<String> {
         vec![
@@ -608,7 +701,9 @@ pub fn run() {
                 let s = state.lock().unwrap();
                 if !s.event_id.is_empty() {
                     drop(s);
-                    let _ = start_server(&state, &handle);
+                    if let Err(e) = start_server(&state, &handle) {
+                        eprintln!("[EventBox] auto-start failed: {}", e);
+                    }
                 }
             }
             Ok(())
