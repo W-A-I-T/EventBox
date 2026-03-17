@@ -697,6 +697,14 @@ setInterval(() => {
 }, 60 * 60_000); // hourly
 
 // ---------------------------------------------------------------------------
+// Template loading (read once at startup)
+// ---------------------------------------------------------------------------
+const TMPL_DIR = new URL("./templates/", import.meta.url).pathname;
+const dashboardTmpl = await Deno.readTextFile(TMPL_DIR + "dashboard.html");
+const joinTmpl = await Deno.readTextFile(TMPL_DIR + "staff-join.html");
+const portalTmpl = await Deno.readTextFile(TMPL_DIR + "portal.html");
+
+// ---------------------------------------------------------------------------
 // HTTP + WS server
 // ---------------------------------------------------------------------------
 Deno.serve({ port: PORT }, async (req) => {
@@ -734,353 +742,22 @@ SERVER_START = Date.now(); // Reflect actual bind time on first request (close e
     } catch {}
     const autoAuth = ADMIN_SECRET === ROOM_CODE;
 
-    const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(eventName)} — EventBox</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,sans-serif;min-height:100vh;background:#0f172a;color:#e2e8f0;padding:1.5rem}
-.wrap{max-width:520px;margin:0 auto}
-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem}
-header h1{font-size:1.3rem;color:#fff;display:flex;align-items:center;gap:.5rem}
-.live-badge{background:#22c55e20;color:#4ade80;font-size:.65rem;padding:2px 10px;border-radius:99px;font-weight:700;letter-spacing:.03em}
-.online-count{font-size:.8rem;color:#94a3b8}
-.event-sub{font-size:.75rem;color:#64748b;margin-top:2px}
-.section{background:#1e293b;border-radius:12px;padding:1.25rem;margin-bottom:1rem}
-.section-title{font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.75rem;display:flex;align-items:center;gap:.5rem}
-.section-title .icon{font-size:1rem}
-/* Sync bar */
-.sync-bar{display:flex;align-items:center;gap:.5rem;padding:.65rem .85rem;background:#1e293b;border-radius:10px;margin-bottom:1rem;font-size:.8rem}
-.sync-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.sync-dot.ok{background:#22c55e;box-shadow:0 0 6px #22c55e60}
-.sync-dot.none{background:#f59e0b}
-.sync-info{flex:1;color:#94a3b8}
-.sync-info strong{color:#e2e8f0}
-.sync-btn{background:none;border:1px solid #334155;color:#94a3b8;padding:3px 10px;border-radius:6px;font-size:.7rem;cursor:pointer}
-.sync-btn:hover{background:#334155;color:#e2e8f0}
-/* Live roster */
-.roster-item{display:flex;align-items:center;gap:.65rem;padding:.5rem 0;border-bottom:1px solid #1a2744;font-size:.8rem}
-.roster-item:last-child{border-bottom:none}
-.avatar{width:30px;height:30px;border-radius:50%;background:#6366f130;color:#a5b4fc;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.7rem;flex-shrink:0}
-.roster-name{color:#fff;font-weight:500}
-.role-badge{display:inline-block;background:#22c55e20;color:#4ade80;padding:1px 8px;border-radius:99px;font-size:.65rem;font-weight:600;margin-left:.35rem}
-.presence-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;flex-shrink:0;margin-left:auto}
-.presence-dot.offline{background:#64748b}
-.no-sessions{color:#64748b;font-size:.8rem;padding:.75rem 0}
-/* Invite staff */
-.invite-form{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.75rem}
-.invite-form select,.invite-form input{padding:.5rem;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:.8rem;outline:none}
-.invite-form select:focus,.invite-form input:focus{border-color:#6366f1}
-.invite-form input{flex:1;min-width:120px}
-.btn{padding:.5rem 1rem;border-radius:6px;border:none;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .15s}
-.btn-primary{background:#6366f1;color:#fff}.btn-primary:hover{background:#4f46e5}
-.btn-danger{background:#dc2626;color:#fff;font-size:.7rem;padding:.3rem .6rem}.btn-danger:hover{background:#b91c1c}
-.generated-qr{background:#fff;border-radius:8px;padding:.75rem;margin-top:.75rem;text-align:center}
-.fallback-code{margin-top:.75rem;text-align:center;font-size:.8rem;color:#64748b}
-.fallback-code strong{color:#f59e0b;font-family:monospace;font-size:1rem;letter-spacing:.3em}
-/* Status grid */
-.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}
-.stat{background:#0f172a;border-radius:8px;padding:.65rem .75rem;text-align:center}
-.stat .num{font-size:1.25rem;font-weight:700;color:#fff}
-.stat .lbl{font-size:.65rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
-details{margin-top:.75rem}
-summary{font-size:.75rem;color:#64748b;cursor:pointer;padding:.5rem 0}
-summary:hover{color:#94a3b8}
-.tech-grid{font-family:monospace;font-size:.75rem;line-height:2;color:#94a3b8;word-break:break-all}
-.tech-grid .val{color:#38bdf8}
-.toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#334155;color:#e2e8f0;padding:.5rem 1.25rem;border-radius:8px;font-size:.8rem;opacity:0;transition:opacity .3s;pointer-events:none}
-.toast.show{opacity:1}
-.hidden{display:none}
-/* Auth prompt */
-.auth-overlay{position:fixed;inset:0;background:#0f172aee;display:flex;align-items:center;justify-content:center;z-index:50}
-.auth-card{background:#1e293b;border-radius:16px;padding:2rem;max-width:360px;width:90%}
-.auth-card h2{font-size:1.1rem;color:#fff;margin-bottom:.5rem}
-.auth-card p{font-size:.8rem;color:#94a3b8;margin-bottom:1rem}
-.auth-card .row{display:flex;gap:.5rem}
-.auth-card input{flex:1;padding:.6rem;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:.85rem;outline:none}
-.auth-card input:focus{border-color:#6366f1}
-.auth-error{color:#f87171;font-size:.8rem;margin-top:.5rem}
-/* Skeleton loader */
-.skeleton{background:linear-gradient(90deg,#1e293b 25%,#334155 50%,#1e293b 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px;height:2rem;margin:.5rem 0}
-@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-</style></head>
-<body>
-
-<!-- Auth overlay (shown only if custom admin secret) -->
-<div class="auth-overlay hidden" id="auth-overlay">
-  <div class="auth-card">
-    <h2>🔒 Admin Password</h2>
-    <p>This server has a separate admin password. Enter it to manage staff.</p>
-    <div class="row">
-      <input type="password" id="admin-pwd" placeholder="Admin password" autofocus>
-      <button class="btn btn-primary" onclick="authAdmin()">Unlock</button>
-    </div>
-    <div class="auth-error hidden" id="auth-error"></div>
-  </div>
-</div>
-
-<div class="wrap">
-<header>
-  <div>
-    <h1>${escapeHtml(eventName)}</h1>
-    <div class="event-sub">EventBox v0.4 · up ${escapeHtml(uptimeStr)}</div>
-  </div>
-  <div style="text-align:right">
-    <span class="live-badge">● Live</span>
-    <div class="online-count" id="online-count">${connectedDevices} online</div>
-  </div>
-</header>
-
-<!-- Sync status bar -->
-<div class="sync-bar">
-  <span class="sync-dot ${Number(heatCount) > 0 ? "ok" : "none"}" id="sync-dot"></span>
-  <span class="sync-info" id="sync-info"><strong>${heatCount} heats</strong> synced · last sync ${escapeHtml(lastSyncStr)}</span>
-  <button class="sync-btn" id="cloud-sync-btn" onclick="syncFromCloud()">☁ Sync from cloud</button>
-  <button class="sync-btn" onclick="refreshSync()">↻ Refresh stats</button>
-</div>
-
-<!-- Live Roster -->
-<div class="section" id="roster-section">
-  <div class="section-title"><span class="icon">👥</span> Staff on floor</div>
-  <div id="roster-list">
-    <div class="skeleton"></div><div class="skeleton" style="width:80%"></div>
-  </div>
-</div>
-
-<!-- Invite Staff (inline admin) -->
-<div class="section" id="invite-section">
-  <div class="section-title"><span class="icon">➕</span> Invite Staff</div>
-  <div class="invite-form">
-    <select id="new-role">
-      <option value="marshal">Marshal</option>
-      <option value="judge">Judge</option>
-      <option value="scanner">Scanner</option>
-      <option value="announcer">Announcer</option>
-      <option value="chairman">Chairman</option>
-      <option value="deck_captain">Deck Captain</option>
-      <option value="scrutineer">Scrutineer</option>
-      <option value="dj">DJ</option>
-      <option value="videographer">Videographer</option>
-    </select>
-    <input type="text" id="new-name" placeholder="Staff name">
-    <button class="btn btn-primary" onclick="createSession()">Generate QR + link</button>
-  </div>
-  <div id="generated-code" class="hidden"></div>
-  <div class="fallback-code">Or share room code: <strong>${escapeHtml(ROOM_CODE)}</strong></div>
-  <div style="margin-top:.75rem;border-top:1px solid #334155;padding-top:.75rem">
-    <div class="section-title" style="margin-bottom:.5rem"><span class="icon">📦</span> Import Event Data</div>
-    <p style="font-size:.75rem;color:#64748b;margin-bottom:.5rem">Load a JSON file exported from ChasséFlow (for venues with no internet)</p>
-    <input type="file" id="import-file" accept=".json" style="display:none" onchange="importFile(this)">
-    <button class="btn btn-primary" style="font-size:.75rem;padding:.4rem .8rem" onclick="document.getElementById('import-file').click()">📂 Import from file</button>
-    <span id="import-status" style="font-size:.75rem;color:#94a3b8;margin-left:.5rem"></span>
-  </div>
-</div>
-
-<!-- Server Status -->
-<div class="section">
-  <div class="section-title"><span class="icon">📊</span> Server Status</div>
-  <div class="stat-grid">
-    <div class="stat"><div class="num">${connectedDevices}</div><div class="lbl">Connected</div></div>
-    <div class="stat"><div class="num">${heatCount}</div><div class="lbl">Heats</div></div>
-    <div class="stat"><div class="num">${opCount}</div><div class="lbl">Ops</div></div>
-    <div class="stat"><div class="num">${escapeHtml(uptimeStr)}</div><div class="lbl">Uptime</div></div>
-  </div>
-  <details>
-    <summary>Technical details</summary>
-    <div class="tech-grid">
-      Event ID: <span class="val" style="cursor:pointer" onclick="navigator.clipboard.writeText(${JSON.stringify(EVENT_ID)}).then(()=>showToast('Copied!'))">${escapeHtml(EVENT_ID)}</span><br>
-      Port: <span class="val">${escapeHtml(String(PORT))}</span><br>
-      Database: <span class="val">${escapeHtml(DB_PATH)}</span><br>
-      Version: <span class="val">0.4.0</span>
-    </div>
-  </details>
-</div>
-</div>
-<div class="toast" id="toast"></div>
-<script>
-let adminToken=sessionStorage.getItem('eventbox_admin_token')||'';
-const ROOM_CODE=${JSON.stringify(ROOM_CODE)};
-const autoAuth=${autoAuth ? "true" : "false"};
-
-function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000)}
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
-
-// --- Auth flow ---
-async function doAutoAuth(){
-  const did=localStorage.getItem('device_id')||crypto.randomUUID();
-  localStorage.setItem('device_id',did);
-  try{
-    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_id:did,admin_secret:ROOM_CODE})});
-    const d=await r.json();
-    if(r.ok){adminToken=d.token;sessionStorage.setItem('eventbox_admin_token',adminToken);localStorage.setItem('eventbox_room_code',ROOM_CODE);return true}
-  }catch{}
-  return false;
-}
-
-async function handleAuth(){
-  if(adminToken){
-    // Verify cached token is still valid
-    try{
-      const r=await fetch('/api/staff-sessions',{headers:{'authorization':'Bearer '+adminToken}});
-      if(r.ok){loadRoster(await r.json());return}
-    }catch{}
-    // Token stale — clear and retry
-    adminToken='';sessionStorage.removeItem('eventbox_admin_token');
-  }
-  if(autoAuth){
-    const ok=await doAutoAuth();
-    if(ok){loadRoster();return}
-  }
-  // Show password prompt
-  document.getElementById('auth-overlay').classList.remove('hidden');
-}
-
-async function authAdmin(){
-  const pwd=document.getElementById('admin-pwd').value.trim();
-  const did=localStorage.getItem('device_id')||crypto.randomUUID();
-  localStorage.setItem('device_id',did);
-  try{
-    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_id:did,admin_secret:pwd})});
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error||'Auth failed');
-    adminToken=d.token;sessionStorage.setItem('eventbox_admin_token',adminToken);localStorage.setItem('eventbox_room_code',ROOM_CODE);
-    document.getElementById('auth-overlay').classList.add('hidden');
-    loadRoster();
-  }catch(e){
-    const el=document.getElementById('auth-error');
-    el.classList.remove('hidden');el.textContent=e.message;
-  }
-}
-document.getElementById('admin-pwd')?.addEventListener('keydown',e=>{if(e.key==='Enter')authAdmin()});
-
-// --- Roster ---
-async function loadRoster(cachedData){
-  try{
-    let data=cachedData;
-    if(!data){
-      const r=await fetch('/api/staff-sessions',{headers:{'authorization':'Bearer '+adminToken}});
-      if(r.status===401){adminToken='';sessionStorage.removeItem('eventbox_admin_token');handleAuth();return}
-      data=await r.json();
-    }
-    const list=document.getElementById('roster-list');
-    const sessions=(data.sessions||[]).filter(s=>!s.revoked_at);
-    if(sessions.length===0){
-      list.innerHTML='<div class="no-sessions">No staff connected yet. Create a join code above or share the room code.</div>';
-      return;
-    }
-    list.innerHTML=sessions.map(s=>{
-      const initials=(s.staff_name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-      const dotClass=s.online?'presence-dot':'presence-dot offline';
-      return '<div class="roster-item"><div class="avatar">'+esc(initials)+'</div><div><span class="roster-name">'+esc(s.staff_name)+'</span><span class="role-badge">'+esc(s.role)+'</span></div><span class="'+dotClass+'"></span><button class="btn btn-danger" style="margin-left:.5rem" onclick="revoke(\\''+s.id+'\\')">Revoke</button></div>';
-    }).join('');
-  }catch(e){
-    document.getElementById('roster-list').innerHTML='<div class="no-sessions" style="color:#f87171">'+esc(e.message)+'</div>';
-  }
-}
-
-// Poll roster every 5s
-setInterval(()=>{if(adminToken)loadRoster()},5000);
-
-// --- Create session ---
-async function createSession(){
-  const role=document.getElementById('new-role').value;
-  const name=document.getElementById('new-name').value.trim();
-  if(!name){showToast('Enter a staff name');return}
-  try{
-    const r=await fetch('/api/staff-sessions',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken},body:JSON.stringify({role,staff_name:name})});
-    if(r.status===401){adminToken='';sessionStorage.removeItem('eventbox_admin_token');handleAuth();return}
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error);
-    document.getElementById('new-name').value='';
-    // Show generated QR
-    const tokenUrl=location.origin+'/staff/join?token='+encodeURIComponent(d.join_code);
-    const container=document.getElementById('generated-code');
-    container.classList.remove('hidden');
-    container.innerHTML='<div class="generated-qr" id="gen-qr"></div><div style="text-align:center;margin-top:.5rem;font-size:.75rem;color:#94a3b8">'+esc(d.staff_name)+' · '+esc(d.role)+'<br><span style="font-family:monospace;color:#38bdf8;cursor:pointer" onclick="navigator.clipboard.writeText(\\''+tokenUrl+'\\').then(()=>showToast(\\'Link copied!\\'))">'+esc(tokenUrl)+'</span></div>';
-    // Generate QR
-    if(window.qrcode){drawQR(tokenUrl,'gen-qr')}
-    else{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';s.onload=function(){drawQR(tokenUrl,'gen-qr')};document.head.appendChild(s)}
-    showToast('Code created for '+name);
-    loadRoster();
-  }catch(e){showToast('Error: '+e.message)}
-}
-
-async function revoke(id){
-  if(!confirm('Revoke this session?'))return;
-  try{
-    await fetch('/api/staff-sessions/revoke',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken},body:JSON.stringify({session_id:id})});
-    loadRoster();
-  }catch(e){showToast('Error: '+e.message)}
-}
-
-// --- File import with validation ---
-async function importFile(input){
-  const file=input.files[0];
-  if(!file)return;
-  const status=document.getElementById('import-status');
-  status.textContent='Importing…';status.style.color='#94a3b8';
-  try{
-    const text=await file.text();
-    const data=JSON.parse(text);
-    if(!data.tables||!Array.isArray(data.tables))throw new Error('Invalid format — expected { tables: [...] }');
-    // Validate event_id if present
-    if(data.event_id && data.event_id!==${safeEventId}){
-      if(!confirm('This file is for a different event ('+data.event_id.slice(0,8)+'…). This server is running event '+${safeEventId}.slice(0,8)+'…. Import anyway?')){
-        status.textContent='Import cancelled';status.style.color='#94a3b8';input.value='';return;
-      }
-    }
-    const r=await fetch('/api/sync-ref',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken},body:text});
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error||'Import failed');
-    status.textContent='✓ Imported '+d.synced+' tables';status.style.color='#4ade80';
-    showToast('Event data imported!');
-    setTimeout(()=>location.reload(),1500);
-  }catch(e){
-    status.textContent='✗ '+e.message;status.style.color='#f87171';
-  }
-  input.value='';
-}
-
-// --- Sync refresh (reloads stats from local SQLite — does not pull from cloud) ---
-async function refreshSync(){
-  showToast('Refreshing local stats…');
-  setTimeout(()=>location.reload(),500);
-}
-
-async function syncFromCloud(){
-  const btn=document.getElementById('cloud-sync-btn');
-  const info=document.getElementById('sync-info');
-  const dot=document.getElementById('sync-dot');
-  btn.disabled=true;btn.textContent='Syncing…';
-  info.innerHTML='<strong>Pulling from ChasseFlow…</strong>';
-  dot.className='sync-dot none';
-  try{
-    const r=await fetch('/api/sync-from-cloud',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken}});
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error||'Sync failed');
-    info.innerHTML='<strong>'+d.synced+' tables synced</strong> &middot; just now';
-    dot.className='sync-dot ok';
-    showToast('Synced '+d.synced+' tables from cloud!');
-    setTimeout(()=>location.reload(),2000);
-  }catch(e){
-    info.innerHTML='<strong style="color:#f87171">Sync failed:</strong> '+esc(e.message);
-    dot.className='sync-dot none';
-    showToast('Sync failed: '+e.message);
-  }finally{
-    btn.disabled=false;btn.textContent='\\u2601 Sync from cloud';
-  }
-}
-
-// --- QR helper ---
-function drawQR(url,containerId){
-  const qr=qrcode(0,'L');qr.addData(url);qr.make();
-  document.getElementById(containerId).innerHTML=qr.createImgTag(4,6);
-}
-
-// --- Init ---
-handleAuth();
-</script>
-</body></html>`;
+    const html = renderTemplate(dashboardTmpl, {
+      EVENT_NAME: escapeHtml(eventName),
+      UPTIME: escapeHtml(uptimeStr),
+      DEVICES: String(connectedDevices),
+      SYNC_DOT_CLASS: Number(heatCount) > 0 ? "ok" : "none",
+      HEATS: String(heatCount),
+      LAST_SYNC: escapeHtml(lastSyncStr),
+      ROOM_CODE: escapeHtml(ROOM_CODE),
+      OPS: String(opCount),
+      EVENT_ID_RAW: escapeHtml(EVENT_ID),
+      JSON_EVENT_ID: JSON.stringify(EVENT_ID),
+      PORT: escapeHtml(String(PORT)),
+      DB_PATH: escapeHtml(DB_PATH),
+      JSON_ROOM_CODE: JSON.stringify(ROOM_CODE),
+      AUTO_AUTH: autoAuth ? "true" : "false",
+    });
     return new Response(html, { headers: { "content-type": "text/html" } });
   }
 
@@ -1676,195 +1353,12 @@ handleAuth();
     const joinCode = url.searchParams.get("join") || "";
     const tokenParam = url.searchParams.get("token") || "";
     const eventName = cachedEventName || EVENT_ID.slice(0, 8) + "…";
-    const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — Staff Join</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,sans-serif;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;padding:1rem}
-.card{background:#1e293b;border-radius:16px;padding:2rem;max-width:400px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5)}
-h1{font-size:1.3rem;color:#fff;text-align:center;margin-bottom:.25rem}
-.subtitle{text-align:center;color:#94a3b8;font-size:.8rem;margin-bottom:1.25rem}
-.steps{display:flex;justify-content:center;gap:.5rem;margin-bottom:1.5rem}
-.step{width:32px;height:4px;border-radius:2px;background:#334155;transition:background .3s}
-.step.active{background:#6366f1}
-.step.done{background:#22c55e}
-label{display:block;font-size:.75rem;color:#94a3b8;margin-bottom:.35rem;text-transform:uppercase;letter-spacing:.05em}
-input{width:100%;padding:.75rem;border-radius:8px;border:2px solid #334155;background:#0f172a;color:#fff;font-size:1rem;outline:none;transition:border-color .2s}
-input:focus{border-color:#6366f1}
-input.code-input{font-size:1.5rem;text-align:center;letter-spacing:.3em}
-.role-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin:.75rem 0}
-.role-btn{padding:.65rem;border-radius:8px;border:2px solid #334155;background:transparent;color:#e2e8f0;font-size:.8rem;cursor:pointer;text-align:center;transition:all .15s;font-weight:500}
-.role-btn:hover{border-color:#6366f1;background:#6366f120}
-.role-btn.selected{border-color:#6366f1;background:#6366f130;color:#a5b4fc}
-.role-btn .emoji{font-size:1.1rem;display:block;margin-bottom:2px}
-button.primary{width:100%;padding:.75rem;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:.9rem;cursor:pointer;font-weight:600;transition:background .15s;margin-top:.75rem}
-button.primary:hover{background:#4f46e5}
-button.primary:disabled{opacity:.4;cursor:not-allowed}
-.msg{margin-top:.75rem;font-size:.8rem;text-align:center;min-height:1em}
-.msg.error{color:#f87171}.msg.success{color:#4ade80}.msg.loading{color:#94a3b8}
-.back{display:block;text-align:center;margin-top:1.25rem;color:#818cf8;font-size:.8rem;text-decoration:none}
-.back:hover{text-decoration:underline}
-.hidden{display:none}
-.role-badge{display:inline-block;background:#22c55e20;color:#4ade80;padding:2px 10px;border-radius:99px;font-size:.75rem;font-weight:600}
-/* Token welcome card */
-.welcome{text-align:center}
-.welcome .avatar-lg{width:64px;height:64px;border-radius:50%;background:#6366f130;color:#a5b4fc;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.5rem;margin:0 auto 1rem}
-.welcome h2{color:#fff;font-size:1.2rem;margin-bottom:.25rem}
-.welcome .event-name{color:#94a3b8;font-size:.8rem;margin-bottom:1rem}
-.spinner{display:inline-block;width:20px;height:20px;border:3px solid #334155;border-top:3px solid #6366f1;border-radius:50%;animation:spin .8s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-</style></head>
-<body><div class="card">
-
-<!-- Token path: auto-join loading -->
-<div id="token-loading" class="hidden" style="text-align:center;padding:2rem 0">
-  <div class="spinner"></div>
-  <p style="margin-top:1rem;color:#94a3b8;font-size:.85rem">Connecting…</p>
-</div>
-
-<!-- Token path: welcome screen -->
-<div id="token-welcome" class="hidden">
-  <div class="welcome">
-    <div class="avatar-lg" id="welcome-avatar">?</div>
-    <h2 id="welcome-name">Welcome!</h2>
-    <div><span class="role-badge" id="welcome-role"></span></div>
-    <div class="event-name">${escapeHtml(eventName)}</div>
-    <button class="primary" id="welcome-btn" onclick="openPortal()">Open console →</button>
-  </div>
-</div>
-
-<!-- Manual path: step 1 (room code) -->
-<div id="step1" class="hidden">
-  <h1>Join Staff Portal</h1>
-  <p class="subtitle">Connect to EventBox on this network</p>
-  <div class="steps"><div class="step active" id="s1"></div><div class="step" id="s2"></div></div>
-  <label>Room Code</label>
-  <input class="code-input" id="code" placeholder="000000" maxlength="8" value="${escapeHtml(joinCode)}" autofocus>
-  <button class="primary" id="btn1" onclick="validateCode()">Continue →</button>
-</div>
-
-<!-- Manual path: step 2 (role + name) -->
-<div id="step2" class="hidden">
-  <h1>Join Staff Portal</h1>
-  <p class="subtitle">${escapeHtml(eventName)}</p>
-  <div class="steps"><div class="step done" id="s1b"></div><div class="step active" id="s2b"></div></div>
-  <label>Your name</label>
-  <input id="staff-name" placeholder="e.g. Sarah, Mike T.">
-  <label style="margin-top:.75rem">Your role</label>
-  <div class="role-grid">
-    <button class="role-btn selected" data-role="marshal" onclick="pickRole(this)"><span class="emoji">🎯</span>Marshal</button>
-    <button class="role-btn" data-role="judge" onclick="pickRole(this)"><span class="emoji">📋</span>Judge</button>
-    <button class="role-btn" data-role="scanner" onclick="pickRole(this)"><span class="emoji">📷</span>Scanner</button>
-    <button class="role-btn" data-role="announcer" onclick="pickRole(this)"><span class="emoji">🎙️</span>Announcer</button>
-    <button class="role-btn" data-role="deck_captain" onclick="pickRole(this)"><span class="emoji">🚦</span>Deck Captain</button>
-    <button class="role-btn" data-role="dj" onclick="pickRole(this)"><span class="emoji">🎵</span>DJ</button>
-  </div>
-  <button class="primary" id="btn2" onclick="joinNow()">Join as Marshal →</button>
-</div>
-
-<div class="msg" id="msg"></div>
-<a class="back" href="/">← Back to Dashboard</a>
-</div>
-<script>
-const msg=document.getElementById('msg');
-let selectedRole='marshal';
-let validatedCode='';
-let joinData=null;
-
-// Decide which path to show
-const tokenParam=${JSON.stringify(tokenParam)};
-const joinParam=${JSON.stringify(joinCode)};
-
-if(tokenParam){
-  // Token path: auto-join immediately
-  document.getElementById('token-loading').classList.remove('hidden');
-  tokenJoin(tokenParam);
-}else{
-  // Manual path
-  document.getElementById('step1').classList.remove('hidden');
-  if(joinParam)setTimeout(validateCode,300);
-}
-
-async function tokenJoin(code){
-  try{
-    const did=localStorage.getItem('device_id')||crypto.randomUUID();
-    localStorage.setItem('device_id',did);
-    const r=await fetch('/api/staff-sessions/join',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({join_code:code,device_id:did})});
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error||'Join failed');
-    localStorage.setItem('eventbox_staff_session',JSON.stringify(d));
-    localStorage.setItem('eventbox_base_url',location.origin);
-    joinData=d;
-    // Show welcome
-    document.getElementById('token-loading').classList.add('hidden');
-    document.getElementById('token-welcome').classList.remove('hidden');
-    const initials=(d.staff_name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-    document.getElementById('welcome-avatar').textContent=initials;
-    document.getElementById('welcome-name').textContent='Welcome, '+d.staff_name+'!';
-    document.getElementById('welcome-role').textContent=d.role;
-  }catch(e){
-    document.getElementById('token-loading').classList.add('hidden');
-    document.getElementById('step1').classList.remove('hidden');
-    showMsg('error','Token expired or invalid — enter room code manually');
-  }
-}
-
-function openPortal(){
-  if(!joinData)return;
-  const url=location.origin+'/portal?role='+encodeURIComponent(joinData.role)+'&eventId='+joinData.event_id+'&token='+encodeURIComponent(joinData.token);
-  location.href=url;
-}
-
-function pickRole(btn){
-  document.querySelectorAll('.role-btn').forEach(b=>b.classList.remove('selected'));
-  btn.classList.add('selected');
-  selectedRole=btn.dataset.role;
-  document.getElementById('btn2').textContent='Join as '+btn.textContent.trim()+' →';
-}
-
-document.getElementById('code')?.addEventListener('keydown',e=>{if(e.key==='Enter')validateCode()});
-document.getElementById('staff-name')?.addEventListener('keydown',e=>{if(e.key==='Enter')joinNow()});
-
-async function validateCode(){
-  const code=document.getElementById('code').value.trim();
-  if(!code){showMsg('error','Enter the room code');return}
-  showMsg('loading','Checking…');
-  try{
-    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_code:code,device_id:localStorage.getItem('device_id')||crypto.randomUUID()})});
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error==='invalid_room_code'?'Invalid room code':d.error||'Failed');
-    validatedCode=code;
-    showMsg('','');
-    document.getElementById('step1').classList.add('hidden');
-    document.getElementById('step2').classList.remove('hidden');
-    document.getElementById('staff-name').focus();
-  }catch(e){showMsg('error',e.message)}
-}
-
-async function joinNow(){
-  const name=document.getElementById('staff-name').value.trim()||('Staff-'+crypto.randomUUID().slice(0,4).toUpperCase());
-  showMsg('loading','Connecting…');
-  document.getElementById('btn2').disabled=true;
-  try{
-    const did=localStorage.getItem('device_id')||crypto.randomUUID();
-    localStorage.setItem('device_id',did);
-    const r=await fetch('/api/staff-sessions/join',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({join_code:validatedCode,device_id:did,role:selectedRole,staff_name:name})});
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.error||'Join failed');
-    localStorage.setItem('eventbox_staff_session',JSON.stringify(d));
-    localStorage.setItem('eventbox_base_url',location.origin);
-    joinData=d;
-    const localPortalUrl=location.origin+'/portal?role='+encodeURIComponent(d.role)+'&eventId='+d.event_id+'&token='+encodeURIComponent(d.token);
-    showMsg('success','');
-    msg.innerHTML='✅ Welcome, <strong>'+esc(d.staff_name)+'</strong>! <span class="role-badge">'+esc(d.role)+'</span>';
-    setTimeout(()=>{location.href=localPortalUrl},1500);
-  }catch(e){showMsg('error',e.message);document.getElementById('btn2').disabled=false}
-}
-
-function showMsg(cls,txt){msg.className='msg'+(cls?' '+cls:'');msg.textContent=txt}
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
-</script></body></html>`;
+    const html = renderTemplate(joinTmpl, {
+      EVENT_NAME: escapeHtml(eventName),
+      JOIN_CODE: escapeHtml(joinCode),
+      JSON_TOKEN_PARAM: JSON.stringify(tokenParam),
+      JSON_JOIN_CODE: JSON.stringify(joinCode),
+    });
     return new Response(html, { headers: { "content-type": "text/html" } });
   }
 
@@ -1942,206 +1436,10 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
     const safeRole = JSON.stringify(role);
     const safeKioskId = JSON.stringify(kioskId);
 
-    const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — ${escapeHtml(title)}</title>
-<style>
-*{box-sizing:border-box;margin:0}
-body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column}
-.topbar{background:#1e293b;padding:.75rem 1rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #334155;position:sticky;top:0;z-index:10}
-.topbar-left{display:flex;align-items:center;gap:.5rem}
-.topbar .staff-avatar{width:28px;height:28px;border-radius:50%;background:#6366f130;color:#a5b4fc;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.65rem;flex-shrink:0}
-.topbar h1{font-size:.95rem;color:#fff}
-.topbar .badge{background:#22c55e20;color:#4ade80;font-size:.65rem;padding:2px 8px;border-radius:99px;font-weight:600}
-.topbar-right{display:flex;align-items:center;gap:.75rem}
-.conn-indicator{display:flex;align-items:center;gap:4px;font-size:.7rem;color:#94a3b8}
-.conn-dot{width:8px;height:8px;border-radius:50%;transition:background .3s}
-.conn-dot.connected{background:#22c55e;box-shadow:0 0 6px #22c55e60}
-.conn-dot.reconnecting{background:#f59e0b;animation:pulse 1s infinite}
-.conn-dot.disconnected{background:#ef4444}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.topbar .sync-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block}
-.upgrade-banner{background:#1e293b;border-bottom:1px solid #334155;padding:.5rem 1rem;font-size:.75rem;color:#94a3b8;text-align:center}
-.upgrade-banner a{color:#818cf8}
-.container{max-width:600px;margin:0 auto;padding:1rem;flex:1}
-.search-bar{width:100%;padding:.7rem;border-radius:8px;border:2px solid #334155;background:#1e293b;color:#fff;font-size:.9rem;outline:none;margin-bottom:1rem}
-.search-bar:focus{border-color:#6366f1}
-.list-item{background:#1e293b;border-radius:10px;padding:.85rem 1rem;margin-bottom:.5rem;display:flex;align-items:center;justify-content:space-between;border:1px solid #334155;transition:border-color .15s}
-.list-item:hover{border-color:#475569}
-.list-item .info{flex:1;min-width:0}
-.list-item .name{font-weight:600;font-size:.9rem;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.list-item .detail{font-size:.75rem;color:#94a3b8;margin-top:2px}
-.list-item .num{background:#6366f120;color:#a5b4fc;font-weight:700;font-size:.85rem;padding:4px 10px;border-radius:6px;margin-right:.75rem;min-width:2rem;text-align:center}
-.btn{padding:.5rem 1rem;border-radius:8px;border:none;font-size:.8rem;font-weight:600;cursor:pointer;transition:all .15s}
-.btn-check{background:#22c55e;color:#fff}.btn-check:hover{background:#16a34a}
-.btn-checked{background:#334155;color:#4ade80;cursor:default}
-.btn-deck{background:#f59e0b;color:#000}.btn-deck:hover{background:#d97706}
-.btn-floor{background:#6366f1;color:#fff}.btn-floor:hover{background:#4f46e5}
-.btn-done{background:#334155;color:#94a3b8;cursor:default}
-.heat-header{background:#1e293b;border-radius:10px;padding:1rem;margin-bottom:.75rem;border:1px solid #334155}
-.heat-header .heat-title{font-size:1.1rem;font-weight:700;color:#fff}
-.heat-header .heat-sub{font-size:.8rem;color:#94a3b8;margin-top:4px}
-.heat-status{display:inline-block;padding:2px 10px;border-radius:99px;font-size:.7rem;font-weight:600;margin-left:.5rem}
-.heat-status.on_floor{background:#6366f120;color:#a5b4fc}
-.heat-status.on_deck{background:#f59e0b20;color:#fbbf24}
-.heat-status.scheduled{background:#33415520;color:#94a3b8}
-.heat-status.completed{background:#22c55e20;color:#4ade80}
-.empty{text-align:center;padding:3rem 1rem;color:#64748b;font-size:.9rem}
-.tabs{display:flex;gap:2px;margin-bottom:1rem;background:#0f172a;border-radius:8px;padding:3px;border:1px solid #334155}
-.tab{flex:1;padding:.5rem;text-align:center;border-radius:6px;font-size:.8rem;cursor:pointer;color:#94a3b8;font-weight:500;transition:all .15s}
-.tab.active{background:#334155;color:#fff}
-.refresh-btn{background:none;border:1px solid #334155;color:#94a3b8;padding:4px 10px;border-radius:6px;font-size:.7rem;cursor:pointer}
-.refresh-btn:hover{background:#1e293b;color:#e2e8f0}
-.count-badge{background:#6366f120;color:#a5b4fc;font-size:.7rem;padding:2px 8px;border-radius:99px;margin-left:.5rem}
-#loading{text-align:center;padding:3rem;color:#64748b}
-#loading .spinner{display:inline-block;width:24px;height:24px;border:3px solid #334155;border-top:3px solid #6366f1;border-radius:50%;animation:spin 1s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-/* Connection footer */
-.conn-footer{background:#1e293b;border-top:1px solid #334155;padding:.5rem 1rem;display:flex;align-items:center;gap:.5rem;font-size:.7rem;color:#94a3b8;position:sticky;bottom:0}
-.conn-footer .conn-dot{width:6px;height:6px}
-</style></head>
-<body>
-<div class="topbar">
-  <div class="topbar-left">
-    <div class="staff-avatar" id="staff-initials">?</div>
-    <div>
-      <h1 id="staff-title">${escapeHtml(title)}</h1>
-    </div>
-    <span class="badge" id="role-badge">${escapeHtml(role)}</span>
-  </div>
-  <div class="topbar-right">
-    <div class="conn-indicator">
-      <span class="conn-dot connected" id="conn-dot"></span>
-      <span id="latency-text"></span>
-    </div>
-    <button class="refresh-btn" onclick="loadData()">↻</button>
-  </div>
-</div>
-<div class="upgrade-banner" id="upgrade-banner" style="display:none">Local-only mode &mdash; <a href="https://dance-flow-control.lovable.app" target="_blank">open full app</a> for additional features</div>
-<div class="container" id="portal-root">
-  <div id="loading"><div class="spinner"></div><p style="margin-top:.75rem;font-size:.85rem">Loading event data…</p></div>
-</div>
-<div class="conn-footer">
-  <span class="conn-dot connected" id="footer-dot"></span>
-  <span id="footer-status">Connected</span>
-  <span style="margin-left:auto" id="footer-sync"></span>
-</div>
-<script>
-// Kiosk mode: bypass token auth, use localStorage session
-const KIOSK_ID=${safeKioskId};
-if(KIOSK_ID){
-  // Load kiosk session from localStorage (set by ChasséFlow KioskStaffSetup)
-  const ks=localStorage.getItem('kiosk_session_'+KIOSK_ID);
-  if(ks){
-    try{
-      const sess=JSON.parse(ks);
-      const initials=(sess.volunteer_name||'?').split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);
-      document.getElementById('staff-initials').textContent=initials;
-      document.getElementById('staff-title').textContent=sess.volunteer_name+' — '+(sess.role||'').replace(/_/g,' ');
-      document.getElementById('role-badge').textContent='kiosk';
-    }catch{}
-  }
-}
-// Fix #2/#19: Token from URL → sessionStorage, strip from URL
-(function(){
-  const urlToken=${safeToken};
-  if(urlToken){sessionStorage.setItem('eb_portal_token',urlToken);history.replaceState(null,'',location.pathname+'?role='+encodeURIComponent(${safeRole})+'&eventId='+encodeURIComponent(${safeEventId})+(KIOSK_ID?'&kiosk='+encodeURIComponent(KIOSK_ID):''));}
-})();
-let TOKEN=sessionStorage.getItem('eb_portal_token')||'';
-// Auto-recover session from localStorage if sessionStorage token is empty
-if(!TOKEN&&!KIOSK_ID){(async function recoverSession(){
-  const saved=localStorage.getItem('eventbox_staff_session');
-  if(!saved)return;
-  try{
-    const sess=JSON.parse(saved);
-    if(!sess.staff_session_id&&!sess.id)return;
-    const sessionId=sess.staff_session_id||sess.id;
-    const deviceId=localStorage.getItem('device_id')||'';
-    const r=await fetch(BASE+'/auth/refresh',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({staff_session_id:sessionId,device_id:deviceId})});
-    if(!r.ok){localStorage.removeItem('eventbox_staff_session');window.location.href='/staff/join';return}
-    const d=await r.json();
-    sessionStorage.setItem('eb_portal_token',d.token);
-    TOKEN=d.token;
-    window.location.reload();
-  }catch{}
-})()}
-// For kiosk mode without token, still allow data loading (read-only via admin token or skip auth)
-if(!TOKEN&&!KIOSK_ID&&!localStorage.getItem('eventbox_staff_session')){
-  document.getElementById('portal-root').innerHTML='<div class="empty"><p>Session expired</p><a href="/staff/join" style="color:#818cf8">Rejoin</a></div>';
-}
-const EVENT_ID=${safeEventId};
-const ROLE=${safeRole};
-const BASE=location.origin;
-const AUTH={'authorization':'Bearer '+TOKEN,'content-type':'application/json'};
-
-// --- Local op queue (survives WS disconnects and page reloads) ---
-const OP_QUEUE_KEY='eb_pending_ops';
-function getOpQueue(){try{return JSON.parse(localStorage.getItem(OP_QUEUE_KEY)||'[]')}catch{return[]}}
-function saveOpQueue(q){localStorage.setItem(OP_QUEUE_KEY,JSON.stringify(q))}
-function queueOp(op){
-  const q=getOpQueue();
-  // Dedup: skip if op_id already queued
-  if(q.some(o=>o.op_id===op.op_id))return;
-  q.push(op);saveOpQueue(q);
-}
-const DRAIN_BATCH_SIZE=30;
-async function drainOpQueue(){
-  const q=getOpQueue();
-  if(q.length===0)return;
-  // Drain in chunks to avoid huge payloads
-  const batch=q.slice(0,DRAIN_BATCH_SIZE);
-  try{
-    const r=await fetch(BASE+'/ops/batch',{method:'POST',headers:AUTH,body:JSON.stringify({ops:batch})});
-    if(r.ok){
-      const d=await r.json();
-      const accepted=new Set((d.results||[]).filter(r=>r.accepted||r.reason==='duplicate').map(r=>r.op_id));
-      const remaining=q.filter(op=>!accepted.has(op.op_id));
-      saveOpQueue(remaining);
-      // If more remain, schedule next batch
-      if(remaining.length>0)setTimeout(drainOpQueue,200);
-    }
-  }catch{/* will retry on next drain */}
-}
-// Drain on load and periodically
-drainOpQueue();
-setInterval(drainOpQueue,10000);
-
-async function api(path,opts){
-  const r=await fetch(BASE+path,{headers:AUTH,...opts});
-  return r.json();
-}
-
-// Toast helper for queued ops
-function showQueuedToast(){
-  const t=document.getElementById('toast');
-  if(t){t.textContent='Saved offline — will sync when connected';t.style.display='block';setTimeout(()=>t.style.display='none',3000);}
-}
-
-// Resilient op submit: try HTTP, fall back to queue
-async function submitOp(op){
-  try{
-    const r=await fetch(BASE+'/ops/batch',{method:'POST',headers:AUTH,body:JSON.stringify({ops:[op]})});
-    if(!r.ok)throw new Error('HTTP '+r.status);
-    return await r.json();
-  }catch{
-    queueOp(op);
-    showQueuedToast();
-    return {ok:false,queued:true};
-  }
-}
-
-// Fix #16: Debounce loadData — max once per second
-let _loadPending=false;
-let _loadTimer=null;
-function debouncedLoad(){
-  if(_loadPending)return;
-  _loadPending=true;
-  if(_loadTimer)clearTimeout(_loadTimer);
-  _loadTimer=setTimeout(()=>{_loadPending=false;loadData();},1000);
-}
-
-// ===================== SCANNER PORTAL =====================
-${role === "scanner" ? `
+    // Build role-specific script
+    let roleScript = "";
+    if (role === "scanner") {
+      roleScript = `
 let credentials=[];
 let checkins={};
 let payments={};
@@ -2154,7 +1452,6 @@ async function loadData(){
       fetch(BASE+'/state/ref?table=credentials',{headers:AUTH}).then(r=>r.json()).catch(()=>null),
       api('/state/payments').catch(()=>({payments:[]}))
     ]);
-    // Build lookup
     credentials=[];
     const ciMap={};
     (ciRes.checkins||[]).forEach(c=>ciMap[c.credential_id]=c.status);
@@ -2162,7 +1459,6 @@ async function loadData(){
     const payMap={};
     (payRes.payments||[]).forEach(p=>payMap[p.credential_id]=p);
     payments=payMap;
-    // Try to get credentials from ref_data
     if(credRef?.data){
       credentials=typeof credRef.data==='string'?JSON.parse(credRef.data):credRef.data;
     }
@@ -2227,10 +1523,9 @@ async function markPaid(credId){
   payments[credId]={credential_id:credId,status:'confirmed',payment_method:'cash'};
   render();
 }
-` : ""}
-
-// ===================== MARSHAL PORTAL =====================
-${role === "marshal" || role === "deck_captain" || role === "floor_captain" ? `
+`;
+    } else if (role === "marshal" || role === "deck_captain" || role === "floor_captain") {
+      roleScript = `
 let heats=[];
 let heatStatuses={};
 let marshalStatuses={};
@@ -2246,12 +1541,10 @@ async function loadData(){
     (hsRes.heats||[]).forEach(h=>heatStatuses[h.heat_id]=h.status);
     marshalStatuses={};
     (msRes.marshal||[]).forEach(m=>marshalStatuses[m.heat_entry_id]=m.status);
-    // Try to load heat ref data
     const heatRef=await fetch(BASE+'/state/ref?table=heats',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
     if(heatRef?.data){
       heats=typeof heatRef.data==='string'?JSON.parse(heatRef.data):heatRef.data;
     }else{
-      // Build from heat_status if no ref data
       heats=Object.keys(heatStatuses).map(id=>({id,heat_number:null,division_name:null}));
     }
     render();
@@ -2302,10 +1595,9 @@ async function setHeatState(heatId,newStatus){
   }
   render();
 }
-` : ""}
-
-// ===================== ANNOUNCER PORTAL =====================
-${role === "announcer" || role === "dj" ? `
+`;
+    } else if (role === "announcer" || role === "dj") {
+      roleScript = `
 let nowPlaying=null;
 let heatsData=[];
 let heatStatuses={};
@@ -2349,12 +1641,11 @@ function render(){
   });
   document.getElementById('portal-root').innerHTML=html;
 }
-` : ""}
-
-// ===================== GENERIC FALLBACK =====================
-${!["scanner","marshal","deck_captain","floor_captain","announcer","dj"].includes(role) ? `
+`;
+    } else {
+      roleScript = `
 async function loadData(){
-  document.getElementById('portal-root').innerHTML='<div class="empty"><p style="font-size:1.1rem;margin-bottom:.5rem">📋 ${title}</p><p>This role\\'s full features are available in the <a href="https://dance-flow-control.lovable.app" style="color:#818cf8">full app</a>.</p><p style="margin-top:1rem">Basic event status:</p><div id="status-info" style="margin-top:.75rem">Loading…</div></div>';
+  document.getElementById('portal-root').innerHTML='<div class="empty"><p style="font-size:1.1rem;margin-bottom:.5rem">📋 ${escapeHtml(title)}</p><p>This role\\'s full features are available in the <a href="https://dance-flow-control.lovable.app" style="color:#818cf8">full app</a>.</p><p style="margin-top:1rem">Basic event status:</p><div id="status-info" style="margin-top:.75rem">Loading…</div></div>';
   try{
     const [npRes,hsRes]=await Promise.all([api('/state/nowplaying'),api('/state/heats')]);
     let info='';
@@ -2369,116 +1660,18 @@ async function loadData(){
     document.getElementById('status-info').innerHTML='<p style="color:#f87171">Could not load status</p>';
   }
 }
-` : ""}
-
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
-
-// Portal toast for feedback
-function portalToast(msg){
-  let t=document.getElementById('portal-toast');
-  if(!t){t=document.createElement('div');t.id='portal-toast';t.style.cssText='position:fixed;bottom:4rem;left:50%;transform:translateX(-50%);background:#334155;color:#e2e8f0;padding:.5rem 1.25rem;border-radius:8px;font-size:.8rem;opacity:0;transition:opacity .3s;pointer-events:none;z-index:100';document.body.appendChild(t)}
-  t.textContent=msg;t.style.opacity='1';
-  setTimeout(()=>{t.style.opacity='0'},3000);
-}
-
-// Populate topbar with staff name from localStorage
-(function(){
-  try{
-    const sess=JSON.parse(localStorage.getItem('eventbox_staff_session')||'{}');
-    if(sess.staff_name){
-      const initials=sess.staff_name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-      document.getElementById('staff-initials').textContent=initials;
-      document.getElementById('staff-title').textContent=sess.staff_name;
+`;
     }
-  }catch{}
-})();
 
-// Auto-refresh every 10 seconds
-loadData();
-setInterval(loadData,10000);
-
-// Show upgrade banner only if internet is reachable
-(function checkInternet(){
-  const banner=document.getElementById('upgrade-banner');
-  if(!banner)return;
-  function probe(){
-    fetch('https://dance-flow-control.lovable.app/health',{mode:'no-cors',cache:'no-store'})
-      .then(()=>{banner.style.display=''})
-      .catch(()=>{banner.style.display='none'});
-  }
-  probe();
-  setInterval(probe,60000);
-})();
-
-// Connection health tracking
-let lastPongAt=0;
-let wsState='disconnected';
-function updateConnUI(){
-  const dot=document.getElementById('conn-dot');
-  const footerDot=document.getElementById('footer-dot');
-  const footerStatus=document.getElementById('footer-status');
-  const latencyText=document.getElementById('latency-text');
-  const classes={connected:'connected',reconnecting:'reconnecting',disconnected:'disconnected'};
-  [dot,footerDot].forEach(el=>{el.className='conn-dot '+classes[wsState]});
-  if(wsState==='connected'){
-    footerStatus.textContent='Connected';
-    if(lastPongAt){
-      const ago=Math.floor((Date.now()-lastPongAt)/1000);
-      document.getElementById('footer-sync').textContent='Last sync: '+ago+'s ago';
-    }
-  }else if(wsState==='reconnecting'){
-    footerStatus.textContent='Reconnecting…';
-    latencyText.textContent='';
-  }else{
-    footerStatus.textContent='Disconnected';
-    latencyText.textContent='';
-  }
-}
-setInterval(updateConnUI,2000);
-
-// Fix #5/#8: WebSocket with exponential backoff reconnect + debounced loadData + health tracking
-(function(){
-  if(!TOKEN)return;
-  let backoff=1000;
-  const maxBackoff=30000;
-  let pingInterval=null;
-  function connect(){
-    try{
-      wsState='reconnecting';updateConnUI();
-      const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//' +location.host+'/ws?token='+TOKEN);
-      ws.onopen=function(){
-        backoff=1000;wsState='connected';updateConnUI();
-        drainOpQueue(); // Flush queued ops on reconnect
-        // Start ping every 5s
-        if(pingInterval)clearInterval(pingInterval);
-        pingInterval=setInterval(()=>{
-          if(ws.readyState===1)ws.send(JSON.stringify({type:'ping',t:Date.now()}));
-        },5000);
-      };
-      ws.onmessage=function(e){
-        try{
-          const m=JSON.parse(e.data);
-          if(m.type==='pong'){
-            lastPongAt=Date.now();
-            const latency=m.t?(Date.now()-m.t):0;
-            document.getElementById('latency-text').textContent=latency+'ms';
-          }
-          if(m.type==='op.applied')debouncedLoad();
-        }catch{}
-      };
-      ws.onclose=function(){
-        wsState='disconnected';updateConnUI();
-        if(pingInterval){clearInterval(pingInterval);pingInterval=null}
-        setTimeout(()=>{connect();backoff=Math.min(backoff*2,maxBackoff);},backoff);
-      };
-    }catch{
-      wsState='disconnected';updateConnUI();
-      setTimeout(()=>{connect();backoff=Math.min(backoff*2,maxBackoff);},backoff);
-    }
-  }
-  connect();
-})();
-</script></body></html>`;
+    const html = renderTemplate(portalTmpl, {
+      TITLE: escapeHtml(title),
+      ROLE: escapeHtml(role),
+      JSON_TOKEN: safeToken,
+      JSON_EVENT_ID: safeEventId,
+      JSON_ROLE: safeRole,
+      JSON_KIOSK_ID: safeKioskId,
+      ROLE_SCRIPT: roleScript,
+    });
     return new Response(html, { headers: { "content-type": "text/html" } });
   }
 
