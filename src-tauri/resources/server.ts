@@ -46,6 +46,7 @@ function escapeHtml(s: string): string {
 }
 
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const SERVER_START = Date.now();
 
 if (!EVENT_ID) {
   console.error("ERROR: EVENTBOX_EVENT_ID is required. Pass it via env or --event-id flag.");
@@ -622,63 +623,111 @@ Deno.serve({ port: PORT }, async (req) => {
 
   // ---- Root landing page ----
   if (url.pathname === "/" && req.method === "GET") {
+    // Gather live stats for dashboard
+    let eventName = EVENT_ID.slice(0, 8) + "…";
+    try {
+      const rows = queryRows(`SELECT data_json FROM ref_data WHERE event_id=? AND table_name='event'`, [EVENT_ID]);
+      if (rows.length > 0) {
+        const parsed = JSON.parse(String(rows[0][0]));
+        if (Array.isArray(parsed) && parsed[0]?.name) eventName = parsed[0].name;
+        else if (parsed?.name) eventName = parsed.name;
+      }
+    } catch {}
+    const connectedDevices = (() => { let c = 0; for (const clients of wsClientsByEvent.values()) c += clients.size; return c; })();
+    const heatCount = queryRows(`SELECT COUNT(*) FROM heat_status WHERE event_id=?`, [EVENT_ID])[0]?.[0] ?? 0;
+    const opCount = queryRows(`SELECT COUNT(*) FROM ops WHERE event_id=?`, [EVENT_ID])[0]?.[0] ?? 0;
+    const uptimeSec = Math.floor((Date.now() - SERVER_START) / 1000);
+    const uptimeStr = uptimeSec < 60 ? `${uptimeSec}s` : uptimeSec < 3600 ? `${Math.floor(uptimeSec/60)}m` : `${Math.floor(uptimeSec/3600)}h ${Math.floor((uptimeSec%3600)/60)}m`;
+
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — ${escapeHtml(EVENT_ID.slice(0,8))}</title>
+<title>EventBox — ${escapeHtml(eventName)}</title>
 <style>
-*{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center}
-.card{background:#1e293b;border-radius:16px;padding:2.5rem;max-width:480px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5)}
-h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}.badge{display:inline-block;background:#22c55e;color:#fff;font-size:.7rem;padding:2px 8px;border-radius:9999px;vertical-align:middle;margin-left:.5rem}
-.info{margin:1.5rem 0;background:#0f172a;border-radius:8px;padding:1rem;font-family:monospace;font-size:.85rem;line-height:1.8}
-.label{color:#94a3b8}.val{color:#38bdf8}
-.code{font-size:2rem;letter-spacing:.3em;text-align:center;color:#f59e0b;font-weight:700;margin:1rem 0}
-.hint{font-size:.8rem;color:#64748b;margin-top:1rem;line-height:1.5}
-a{color:#818cf8}hr{border:none;border-top:1px solid #334155;margin:1.5rem 0}
-.actions{display:flex;gap:.75rem;margin-top:1rem}
-.actions a{flex:1;text-align:center;padding:.6rem;border-radius:8px;background:#334155;color:#e2e8f0;text-decoration:none;font-size:.85rem}
-.actions a:hover{background:#475569}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;min-height:100vh;background:#0f172a;color:#e2e8f0;padding:1.5rem}
+.wrap{max-width:480px;margin:0 auto}
+header{text-align:center;margin-bottom:1.5rem}
+header h1{font-size:1.5rem;color:#fff;display:inline-flex;align-items:center;gap:.5rem}
+.running-dot{width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e80;display:inline-block}
+.event-name{color:#94a3b8;font-size:.85rem;margin-top:.25rem}
+.section{background:#1e293b;border-radius:12px;padding:1.25rem;margin-bottom:1rem}
+.section-title{font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.75rem;display:flex;align-items:center;gap:.5rem}
+.section-title .icon{font-size:1rem}
+.room-code{font-size:2.5rem;font-weight:800;letter-spacing:.4em;text-align:center;color:#f59e0b;padding:.25rem 0;cursor:pointer;transition:opacity .15s}
+.room-code:hover{opacity:.8}
+.room-code:active{opacity:.6}
+.url-box{background:#0f172a;border-radius:8px;padding:.65rem .85rem;font-family:monospace;font-size:.8rem;color:#38bdf8;text-align:center;margin:.75rem 0;cursor:pointer;border:1px solid #334155;transition:border-color .15s}
+.url-box:hover{border-color:#6366f1}
+.instruction{font-size:.8rem;color:#94a3b8;text-align:center;line-height:1.6}
+#qr-root{display:flex;justify-content:center;padding:.75rem;background:#fff;border-radius:8px;margin:.75rem 0}
+.manage-link{display:flex;align-items:center;justify-content:space-between;text-decoration:none;color:#e2e8f0;transition:background .15s;margin:-.25rem;padding:.5rem .75rem;border-radius:8px}
+.manage-link:hover{background:#334155}
+.manage-link .arrow{color:#64748b;font-size:1.2rem}
+.manage-desc{font-size:.8rem;color:#94a3b8;margin-top:2px}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}
+.stat{background:#0f172a;border-radius:8px;padding:.65rem .75rem;text-align:center}
+.stat .num{font-size:1.25rem;font-weight:700;color:#fff}
+.stat .lbl{font-size:.65rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+details{margin-top:.75rem}
+summary{font-size:.75rem;color:#64748b;cursor:pointer;padding:.5rem 0}
+summary:hover{color:#94a3b8}
+.tech-grid{font-family:monospace;font-size:.75rem;line-height:2;color:#94a3b8;word-break:break-all}
+.tech-grid .val{color:#38bdf8}
+.toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#334155;color:#e2e8f0;padding:.5rem 1.25rem;border-radius:8px;font-size:.8rem;opacity:0;transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
 </style></head>
-<body><div class="card">
-<h1>EventBox<span class="badge">Running</span></h1>
-<p style="color:#94a3b8;font-size:.85rem;margin-top:.25rem">LAN Authority Server v0.4</p>
-<div class="info">
-<span class="label">Event ID:</span> <span class="val">${escapeHtml(EVENT_ID)}</span><br>
-<span class="label">Port:</span> <span class="val">${escapeHtml(String(PORT))}</span><br>
-<span class="label">Database:</span> <span class="val">${escapeHtml(DB_PATH)}</span>
+<body>
+<div class="wrap">
+<header>
+  <h1><span class="running-dot"></span> EventBox</h1>
+  <div class="event-name">${escapeHtml(eventName)}</div>
+</header>
+
+<div class="section">
+  <div class="section-title"><span class="icon">📱</span> Connect Staff</div>
+  <p class="instruction">Staff open this link on their phone:</p>
+  <div class="url-box" id="url-box" onclick="copyUrl()" title="Click to copy"></div>
+  <p class="instruction">…and enter this code:</p>
+  <div class="room-code" onclick="copyCode()" title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
+  <div id="qr-root"></div>
 </div>
-<p style="color:#94a3b8;font-size:.85rem">Room Code — share this with staff:</p>
-<div class="code" style="cursor:pointer" onclick="navigator.clipboard.writeText(${JSON.stringify(ROOM_CODE)})" title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
-<div id="qr-root" style="display:flex;justify-content:center;padding:1rem;background:#fff;border-radius:8px;margin:1rem 0"></div>
-<p class="hint">Staff scan the QR code or enter the Room Code at <strong>/staff</strong> to connect.</p>
-<hr>
-<div class="actions">
-<a href="/health">Health Check</a>
-<a href="/staff">Staff Join</a>
-<a href="/admin">Admin Panel</a>
+
+<div class="section">
+  <a href="/admin" class="manage-link">
+    <div>
+      <div style="font-weight:600;font-size:.9rem">👥 Manage Staff</div>
+      <div class="manage-desc">Create named codes, assign roles, revoke access</div>
+    </div>
+    <span class="arrow">→</span>
+  </a>
 </div>
-<p class="hint" style="margin-top:1.5rem">📱 Staff devices should be on the same Wi-Fi. They connect via this machine's local IP on port ${escapeHtml(String(PORT))}.</p>
+
+<div class="section">
+  <div class="section-title"><span class="icon">📊</span> Server Status</div>
+  <div class="stat-grid">
+    <div class="stat"><div class="num">${connectedDevices}</div><div class="lbl">Connected</div></div>
+    <div class="stat"><div class="num">${heatCount}</div><div class="lbl">Heats synced</div></div>
+    <div class="stat"><div class="num">${opCount}</div><div class="lbl">Ops logged</div></div>
+    <div class="stat"><div class="num">${escapeHtml(uptimeStr)}</div><div class="lbl">Uptime</div></div>
+  </div>
+  <details>
+    <summary>Technical details</summary>
+    <div class="tech-grid">
+      Event ID: <span class="val" style="cursor:pointer" onclick="navigator.clipboard.writeText(${JSON.stringify(EVENT_ID)}).then(()=>showToast('Copied!'))">${escapeHtml(EVENT_ID)}</span><br>
+      Port: <span class="val">${escapeHtml(String(PORT))}</span><br>
+      Database: <span class="val">${escapeHtml(DB_PATH)}</span><br>
+      Version: <span class="val">0.4.0</span>
+    </div>
+  </details>
+</div>
+</div>
+<div class="toast" id="toast"></div>
 <script>
-// Minimal QR Code generator (numeric mode, version 2, ECC-L)
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000)}
+function copyCode(){navigator.clipboard.writeText(${JSON.stringify(ROOM_CODE)}).then(()=>showToast('Room code copied!'))}
+function copyUrl(){navigator.clipboard.writeText(document.getElementById('url-box').textContent).then(()=>showToast('URL copied!'))}
+document.getElementById('url-box').textContent=location.origin+'/staff';
 (function(){
-  // Use a simple text-to-QR approach via canvas
-  function qrToCanvas(text,container,size){
-    // We'll generate a basic QR using a minimal algorithm
-    // For production reliability, we encode as a simple URL in a grid pattern
-    const canvas=document.createElement('canvas');
-    canvas.width=size;canvas.height=size;
-    const ctx=canvas.getContext('2d');
-    ctx.fillStyle='#fff';ctx.fillRect(0,0,size,size);
-    // Encode URL as data matrix fallback — show large readable code instead
-    ctx.fillStyle='#0f172a';
-    ctx.font='bold 16px system-ui';ctx.textAlign='center';
-    ctx.fillText('Scan with camera or enter code:',size/2,size/2-10);
-    ctx.font='bold 28px monospace';
-    ctx.fillText(${JSON.stringify(ROOM_CODE)},size/2,size/2+30);
-    ctx.font='11px system-ui';ctx.fillStyle='#64748b';
-    ctx.fillText(location.origin+'/staff',size/2,size/2+55);
-    container.appendChild(canvas);
-  }
-  // Try loading qrcode lib from CDN for real QR
   const s=document.createElement('script');
   s.src='https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
   s.onload=function(){
@@ -688,47 +737,19 @@ a{color:#818cf8}hr{border:none;border-top:1px solid #334155;margin:1.5rem 0}
     document.getElementById('qr-root').innerHTML=qr.createImgTag(5,8);
   };
   s.onerror=function(){
-    qrToCanvas(${JSON.stringify(ROOM_CODE)},document.getElementById('qr-root'),240);
+    const el=document.getElementById('qr-root');
+    el.style.cssText='text-align:center;padding:1rem;background:#fff;border-radius:8px;color:#0f172a;font-size:.8rem';
+    el.textContent='QR unavailable offline — staff can enter code manually';
   };
   document.head.appendChild(s);
 })();
 </script>
-</div></body></html>`;
+</body></html>`;
     return new Response(html, { headers: { "content-type": "text/html" } });
   }
 
   // ---- Health (unauthenticated — needed for discovery) ----
   if (url.pathname === "/health") {
-    const accept = req.headers.get("accept") || "";
-    if (accept.includes("text/html")) {
-      // Browser — show nice page
-      const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — Health Check</title>
-<style>
-*{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center}
-.card{background:#1e293b;border-radius:16px;padding:2.5rem;max-width:400px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5);text-align:center}
-h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
-.badge{display:inline-block;background:#22c55e;color:#fff;font-size:.75rem;padding:3px 12px;border-radius:9999px;margin:.75rem 0;font-weight:600}
-.info{margin:1rem 0;background:#0f172a;border-radius:8px;padding:1rem;font-family:monospace;font-size:.85rem;line-height:1.8;text-align:left}
-.label{color:#94a3b8}.val{color:#38bdf8}
-.back{display:block;text-align:center;margin-top:1.5rem;color:#818cf8;font-size:.85rem;text-decoration:none}
-.back:hover{text-decoration:underline}
-</style></head>
-<body><div class="card">
-<h1>Health Check</h1>
-<div class="badge">✓ All Systems OK</div>
-<div class="info">
-<span class="label">Status:</span> <span class="val">Running</span><br>
-<span class="label">Event ID:</span> <span class="val">${escapeHtml(EVENT_ID)}</span><br>
-<span class="label">Version:</span> <span class="val">0.4.0</span><br>
-<span class="label">Time:</span> <span class="val">${new Date().toISOString()}</span><br>
-<span class="label">Port:</span> <span class="val">${escapeHtml(String(PORT))}</span>
-</div>
-<a class="back" href="/">← Back to Dashboard</a>
-</div></body></html>`;
-      return new Response(html, { headers: { "content-type": "text/html" } });
-    }
     return json({
       ok: true,
       time: Date.now(),
@@ -1200,117 +1221,141 @@ h1{margin:0 0 .25rem;font-size:1.5rem;color:#fff}
     return json({ ok: true });
   }
 
-  // GET /staff/join — Self-contained join page (works on localhost without PWA)
+  // GET /staff/join — Two-step join: code → role + name
   if (url.pathname === "/staff/join" && req.method === "GET") {
     const joinCode = url.searchParams.get("join") || "";
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>EventBox — Staff Join</title>
 <style>
-*{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center}
-.card{background:#1e293b;border-radius:16px;padding:2.5rem;max-width:400px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5)}
-h1{margin:0 0 .5rem;font-size:1.5rem;color:#fff;text-align:center}
-.subtitle{text-align:center;color:#94a3b8;font-size:.85rem;margin-bottom:1.5rem}
-input{width:100%;padding:.85rem;border-radius:8px;border:2px solid #334155;background:#0f172a;color:#fff;font-size:1.3rem;text-align:center;letter-spacing:.3em;margin:.75rem 0;outline:none;transition:border-color .2s}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#1e293b;border-radius:16px;padding:2rem;max-width:400px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5)}
+h1{font-size:1.3rem;color:#fff;text-align:center;margin-bottom:.25rem}
+.subtitle{text-align:center;color:#94a3b8;font-size:.8rem;margin-bottom:1.25rem}
+.steps{display:flex;justify-content:center;gap:.5rem;margin-bottom:1.5rem}
+.step{width:32px;height:4px;border-radius:2px;background:#334155;transition:background .3s}
+.step.active{background:#6366f1}
+.step.done{background:#22c55e}
+label{display:block;font-size:.75rem;color:#94a3b8;margin-bottom:.35rem;text-transform:uppercase;letter-spacing:.05em}
+input{width:100%;padding:.75rem;border-radius:8px;border:2px solid #334155;background:#0f172a;color:#fff;font-size:1rem;outline:none;transition:border-color .2s}
 input:focus{border-color:#6366f1}
-button{width:100%;padding:.85rem;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:1rem;cursor:pointer;font-weight:600;transition:background .2s}
-button:hover{background:#4f46e5}button:disabled{opacity:.5;cursor:not-allowed}
-.msg{margin-top:1rem;font-size:.85rem;text-align:center;min-height:1.2em}
+input.code-input{font-size:1.5rem;text-align:center;letter-spacing:.3em}
+.role-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin:.75rem 0}
+.role-btn{padding:.65rem;border-radius:8px;border:2px solid #334155;background:transparent;color:#e2e8f0;font-size:.8rem;cursor:pointer;text-align:center;transition:all .15s;font-weight:500}
+.role-btn:hover{border-color:#6366f1;background:#6366f120}
+.role-btn.selected{border-color:#6366f1;background:#6366f130;color:#a5b4fc}
+.role-btn .emoji{font-size:1.1rem;display:block;margin-bottom:2px}
+button.primary{width:100%;padding:.75rem;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:.9rem;cursor:pointer;font-weight:600;transition:background .15s;margin-top:.75rem}
+button.primary:hover{background:#4f46e5}
+button.primary:disabled{opacity:.4;cursor:not-allowed}
+.msg{margin-top:.75rem;font-size:.8rem;text-align:center;min-height:1em}
 .msg.error{color:#f87171}.msg.success{color:#4ade80}.msg.loading{color:#94a3b8}
-.back{display:block;text-align:center;margin-top:1.5rem;color:#818cf8;font-size:.85rem;text-decoration:none}
+.back{display:block;text-align:center;margin-top:1.25rem;color:#818cf8;font-size:.8rem;text-decoration:none}
 .back:hover{text-decoration:underline}
-.role-badge{display:inline-block;background:#22c55e20;color:#4ade80;padding:2px 10px;border-radius:99px;font-size:.8rem;font-weight:600}
+.hidden{display:none}
+.role-badge{display:inline-block;background:#22c55e20;color:#4ade80;padding:2px 10px;border-radius:99px;font-size:.75rem;font-weight:600}
 </style></head>
 <body><div class="card">
-<h1>Staff Join</h1>
-<p class="subtitle">Enter the <strong style="color:#f59e0b">Room Code</strong> from the EventBox dashboard</p>
-<input id="code" placeholder="000000" maxlength="8" value="${escapeHtml(joinCode)}" autofocus>
-<button id="btn" onclick="join()">Connect</button>
+<h1>Join Staff Portal</h1>
+<p class="subtitle">Connect to EventBox on this network</p>
+<div class="steps"><div class="step active" id="s1"></div><div class="step" id="s2"></div></div>
+
+<!-- Step 1: Room code -->
+<div id="step1">
+  <label>Room Code</label>
+  <input class="code-input" id="code" placeholder="000000" maxlength="8" value="${escapeHtml(joinCode)}" autofocus>
+  <button class="primary" id="btn1" onclick="validateCode()">Continue →</button>
+</div>
+
+<!-- Step 2: Role + Name -->
+<div id="step2" class="hidden">
+  <label>Your name</label>
+  <input id="staff-name" placeholder="e.g. Sarah, Mike T.">
+  <label style="margin-top:.75rem">Your role</label>
+  <div class="role-grid">
+    <button class="role-btn" data-role="marshal" onclick="pickRole(this)"><span class="emoji">🎯</span>Marshal</button>
+    <button class="role-btn" data-role="judge" onclick="pickRole(this)"><span class="emoji">📋</span>Judge</button>
+    <button class="role-btn" data-role="scanner" onclick="pickRole(this)"><span class="emoji">📷</span>Scanner</button>
+    <button class="role-btn" data-role="announcer" onclick="pickRole(this)"><span class="emoji">🎙️</span>Announcer</button>
+    <button class="role-btn" data-role="deck_captain" onclick="pickRole(this)"><span class="emoji">🚦</span>Deck Captain</button>
+    <button class="role-btn" data-role="dj" onclick="pickRole(this)"><span class="emoji">🎵</span>DJ</button>
+  </div>
+  <button class="primary" id="btn2" onclick="joinNow()" disabled>Join →</button>
+</div>
+
 <div class="msg" id="msg"></div>
 <a class="back" href="/">← Back to Dashboard</a>
 </div>
 <script>
 const msg=document.getElementById('msg');
-const btn=document.getElementById('btn');
-const inp=document.getElementById('code');
-inp.addEventListener('keydown',e=>{if(e.key==='Enter')join()});
-${joinCode ? "setTimeout(join,300);" : ""}
-async function join(){
-  const code=inp.value.trim().toUpperCase();
-  if(!code){msg.className='msg error';msg.textContent='Enter the room code or join code';return}
-  btn.disabled=true;msg.className='msg loading';msg.textContent='Connecting…';
+let selectedRole='';
+let validatedCode='';
+
+document.getElementById('code').addEventListener('keydown',e=>{if(e.key==='Enter')validateCode()});
+document.getElementById('staff-name').addEventListener('keydown',e=>{if(e.key==='Enter'&&selectedRole)joinNow()});
+${joinCode ? "setTimeout(validateCode,300);" : ""}
+
+function pickRole(btn){
+  document.querySelectorAll('.role-btn').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');
+  selectedRole=btn.dataset.role;
+  document.getElementById('btn2').disabled=false;
+  document.getElementById('btn2').textContent='Join as '+btn.textContent.trim()+' →';
+}
+
+async function validateCode(){
+  const code=document.getElementById('code').value.trim();
+  if(!code){showMsg('error','Enter the room code');return}
+  showMsg('loading','Checking…');
+  try{
+    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_code:code,device_id:localStorage.getItem('device_id')||crypto.randomUUID()})});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error==='invalid_room_code'?'Invalid room code':d.error||'Failed');
+    validatedCode=code;
+    showMsg('','');
+    document.getElementById('step1').classList.add('hidden');
+    document.getElementById('step2').classList.remove('hidden');
+    document.getElementById('s1').classList.remove('active');
+    document.getElementById('s1').classList.add('done');
+    document.getElementById('s2').classList.add('active');
+    document.getElementById('staff-name').focus();
+  }catch(e){showMsg('error',e.message)}
+}
+
+async function joinNow(){
+  const name=document.getElementById('staff-name').value.trim()||('Staff-'+crypto.randomUUID().slice(0,4).toUpperCase());
+  if(!selectedRole){showMsg('error','Pick a role');return}
+  showMsg('loading','Connecting…');
+  document.getElementById('btn2').disabled=true;
   try{
     const did=localStorage.getItem('device_id')||crypto.randomUUID();
     localStorage.setItem('device_id',did);
-    const r=await fetch('/api/staff-sessions/join',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({join_code:code,device_id:did})});
+    const r=await fetch('/api/staff-sessions/join',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({join_code:validatedCode,device_id:did,role:selectedRole,staff_name:name})});
     const d=await r.json();
     if(!r.ok)throw new Error(d.error||'Join failed');
-    msg.className='msg success';
-    // Local portal URL — works even with zero internet
-    const localPortalUrl=location.origin+'/portal?role='+encodeURIComponent(d.role)+'&eventId='+d.event_id+'&token='+encodeURIComponent(d.token);
-    // Full PWA URL — for when internet is available
-    const pwaBase='https://dance-flow-control.lovable.app';
-    const pwaPortalMap={judge:'/app/judge',marshal:'/app/marshal',scanner:'/app/checkin',announcer:'/app/announcer',chairman:'/app/chairman',dj:'/app/dj',videographer:'/app/videographer',deck_captain:'/app/deckcaptain',scrutineer:'/app/scrutineer',event_admin:'/app/events'};
-    const pwaPortal=pwaPortalMap[d.role]||'/app/marshal';
-    const pwaUrl=pwaBase+pwaPortal+'?eventId='+d.event_id+'&eventbox='+encodeURIComponent(location.origin);
-    msg.textContent='';
-    var check=document.createElement('span');check.textContent='✅ Welcome, ';
-    var nameEl=document.createElement('strong');nameEl.textContent=d.staff_name;
-    var roleBadge=document.createElement('span');roleBadge.className='role-badge';roleBadge.textContent=d.role;
-    msg.appendChild(check);msg.appendChild(nameEl);msg.appendChild(document.createTextNode('! '));msg.appendChild(roleBadge);
-    msg.appendChild(document.createElement('br'));
-    var link=document.createElement('a');link.href=localPortalUrl;link.textContent='Open Portal →';
-    link.style.cssText='display:inline-block;margin-top:1rem;padding:.6rem 1.5rem;border-radius:8px;background:#6366f1;color:#fff;text-decoration:none;font-weight:600';
-    msg.appendChild(link);
-    msg.appendChild(document.createElement('br'));
-    var hint=document.createElement('span');hint.style.cssText='font-size:.75rem;color:#94a3b8;margin-top:.5rem;display:block';
-    hint.innerHTML='This portal works offline on this network.<br><a href="'+pwaUrl+'" style="color:#818cf8">Open full app →</a> (requires internet)';
-    msg.appendChild(hint);
     localStorage.setItem('eventbox_staff_session',JSON.stringify(d));
     localStorage.setItem('eventbox_base_url',location.origin);
-  }catch(e){msg.className='msg error';msg.textContent='❌ '+e.message;btn.disabled=false}
+    const localPortalUrl=location.origin+'/portal?role='+encodeURIComponent(d.role)+'&eventId='+d.event_id+'&token='+encodeURIComponent(d.token);
+    showMsg('success','');
+    msg.innerHTML='✅ Welcome, <strong>'+esc(d.staff_name)+'</strong>! <span class="role-badge">'+esc(d.role)+'</span>';
+    setTimeout(()=>{location.href=localPortalUrl},1500);
+  }catch(e){showMsg('error',e.message);document.getElementById('btn2').disabled=false}
 }
+
+function showMsg(cls,txt){msg.className='msg'+(cls?' '+cls:'');msg.textContent=txt}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 </script></body></html>`;
     return new Response(html, { headers: { "content-type": "text/html" } });
   }
 
-  // GET /staff — Staff portal entry point
+  // GET /staff — Staff portal entry point (redirect to join)
   if (url.pathname === "/staff" && req.method === "GET") {
     const joinCode = url.searchParams.get("join") || "";
     if (joinCode) {
       return Response.redirect(`${url.origin}/staff/join?join=${encodeURIComponent(joinCode)}`, 302);
     }
-    const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — Staff Portal</title>
-<style>
-*{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center}
-.card{background:#1e293b;border-radius:16px;padding:2.5rem;max-width:400px;width:100%;box-shadow:0 25px 50px -12px rgba(0,0,0,.5);text-align:center}
-h1{margin:0 0 .5rem;font-size:1.5rem;color:#fff}
-.subtitle{color:#94a3b8;font-size:.85rem;margin-bottom:1.5rem}
-input{width:100%;padding:.85rem;border-radius:8px;border:2px solid #334155;background:#0f172a;color:#fff;font-size:1.3rem;text-align:center;letter-spacing:.3em;margin:.75rem 0;outline:none;transition:border-color .2s}
-input:focus{border-color:#6366f1}
-button{width:100%;padding:.85rem;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:1rem;cursor:pointer;font-weight:600}
-button:hover{background:#4f46e5}
-.back{display:block;text-align:center;margin-top:1.5rem;color:#818cf8;font-size:.85rem;text-decoration:none}
-.back:hover{text-decoration:underline}
-</style></head>
-<body><div class="card">
-<h1>Staff Portal</h1>
-<p class="subtitle">Enter the <strong style="color:#f59e0b">Room Code</strong> from the EventBox dashboard</p>
-<input id="code" placeholder="Room Code" maxlength="8" autofocus>
-<button onclick="go()">Join</button>
-<a class="back" href="/">← Back to Dashboard</a>
-</div>
-<script>
-document.getElementById('code').addEventListener('keydown',e=>{if(e.key==='Enter')go()});
-function go(){
-  const code=document.getElementById('code').value.trim();
-  if(!code)return;
-  location.href='/staff/join?join='+encodeURIComponent(code);
-}
-</script></body></html>`;
-    return new Response(html, { headers: { "content-type": "text/html" } });
+    return Response.redirect(`${url.origin}/staff/join`, 302);
   }
 
   // ---- Auth: refresh token (Bug 3 fix) ----
@@ -1348,81 +1393,70 @@ function go(){
 
   // ---- GET /admin — Admin panel for managing staff sessions ----
   if (url.pathname === "/admin" && req.method === "GET") {
+    const autoAuth = ADMIN_SECRET === ROOM_CODE;
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EventBox — Admin</title>
+<title>EventBox — Manage Staff</title>
 <style>
-*{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0f172a;color:#e2e8f0;padding:2rem}
-.container{max-width:600px;margin:0 auto}
-h1{font-size:1.5rem;color:#fff;margin:0 0 .25rem}
-.sub{color:#94a3b8;font-size:.8rem;margin-bottom:1.5rem}
-.card{background:#1e293b;border-radius:12px;padding:1.5rem;margin-bottom:1rem}
-.label{font-size:.7rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.5rem}
-.room-code{font-size:2.5rem;font-weight:800;letter-spacing:.3em;color:#f59e0b;text-align:center;padding:.5rem 0;cursor:pointer}
-.room-code:hover{opacity:.8}
-.event-id{font-family:monospace;font-size:.75rem;color:#38bdf8;word-break:break-all;cursor:pointer;padding:.5rem;background:#0f172a;border-radius:6px;margin-top:.25rem}
-.event-id:hover{background:#1a2744}
-.qr-wrap{display:flex;justify-content:center;padding:1rem;background:#fff;border-radius:8px;margin:1rem 0}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;min-height:100vh;background:#0f172a;color:#e2e8f0;padding:1.5rem}
+.container{max-width:520px;margin:0 auto}
+h1{font-size:1.3rem;color:#fff;margin-bottom:.25rem}
+.sub{color:#94a3b8;font-size:.8rem;margin-bottom:1.25rem}
+.card{background:#1e293b;border-radius:12px;padding:1.25rem;margin-bottom:1rem}
+.label{font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.5rem}
 .btn{padding:.5rem 1rem;border-radius:6px;border:none;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .15s}
 .btn-primary{background:#6366f1;color:#fff}.btn-primary:hover{background:#4f46e5}
 .btn-danger{background:#dc2626;color:#fff;font-size:.7rem;padding:.3rem .6rem}.btn-danger:hover{background:#b91c1c}
-.btn-outline{background:transparent;border:1px solid #334155;color:#e2e8f0;font-size:.75rem;padding:.4rem .75rem}.btn-outline:hover{background:#1e293b}
 select,input[type=text]{padding:.5rem;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:.8rem;outline:none}
 select:focus,input[type=text]:focus{border-color:#6366f1}
 .sessions-list{margin-top:.75rem}
-.session-row{display:flex;justify-content:space-between;align-items:center;padding:.5rem 0;border-bottom:1px solid #334155;font-size:.8rem}
+.session-row{display:flex;justify-content:space-between;align-items:center;padding:.6rem 0;border-bottom:1px solid #334155;font-size:.8rem}
 .session-row:last-child{border-bottom:none}
 .role-badge{display:inline-block;background:#22c55e20;color:#4ade80;padding:1px 8px;border-radius:99px;font-size:.7rem;font-weight:600;margin-left:.5rem}
+.code-tag{font-family:monospace;font-size:.7rem;color:#38bdf8;cursor:pointer;background:#0f172a;padding:2px 6px;border-radius:4px}
+.code-tag:hover{background:#1a2744}
 .toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#334155;color:#e2e8f0;padding:.5rem 1.25rem;border-radius:8px;font-size:.8rem;opacity:0;transition:opacity .3s;pointer-events:none}
 .toast.show{opacity:1}
-.back{display:inline-block;margin-top:1rem;color:#818cf8;font-size:.85rem;text-decoration:none}
+.back{display:inline-block;margin-top:1rem;color:#818cf8;font-size:.8rem;text-decoration:none}
 .back:hover{text-decoration:underline}
 .create-form{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.75rem}
+.auth-box{display:flex;gap:.5rem;margin-top:.5rem}
+.hidden{display:none}
 </style></head>
 <body>
 <div class="container">
-<h1>EventBox Admin</h1>
-<p class="sub">Manage staff connections for this event</p>
+<h1>Manage Staff</h1>
+<p class="sub">Create individual join codes for each staff member, or let everyone use the shared room code.</p>
 
-<div class="card">
-<p class="label">Room Code — staff enter this to connect</p>
-<div class="room-code" onclick="copy(${JSON.stringify(ROOM_CODE)})" title="Click to copy">${escapeHtml(ROOM_CODE)}</div>
-<div class="qr-wrap" id="qr-admin"></div>
-</div>
-
-<div class="card">
-<p class="label">Event ID</p>
-<div class="event-id" onclick="copy(${JSON.stringify(EVENT_ID)})" title="Click to copy">${escapeHtml(EVENT_ID)}</div>
-</div>
-
-<div class="card" id="auth-card">
-<p class="label">Authenticate</p>
-<p style="font-size:.8rem;color:#94a3b8;margin:.5rem 0">Enter the admin secret to manage staff sessions:</p>
-<div style="display:flex;gap:.5rem">
-<input type="text" id="admin-code" placeholder="Admin secret" style="flex:1">
-<button class="btn btn-primary" onclick="authAdmin()">Unlock</button>
-</div>
-<div id="auth-error" style="color:#f87171;font-size:.8rem;margin-top:.5rem"></div>
+<div class="card ${autoAuth ? "hidden" : ""}" id="auth-card">
+  <p class="label">Admin Password</p>
+  <p style="font-size:.8rem;color:#94a3b8;margin-bottom:.5rem">This server has a separate admin password. Enter it below:</p>
+  <div class="auth-box">
+    <input type="text" id="admin-code" placeholder="Admin password" style="flex:1">
+    <button class="btn btn-primary" onclick="authAdmin()">Unlock</button>
+  </div>
+  <div id="auth-error" style="color:#f87171;font-size:.8rem;margin-top:.5rem"></div>
 </div>
 
-<div class="card" id="sessions-card" style="display:none">
-<p class="label">Active Staff Sessions</p>
-<div class="create-form">
-<select id="new-role">
-<option value="marshal">Marshal</option>
-<option value="judge">Judge</option>
-<option value="scanner">Scanner</option>
-<option value="announcer">Announcer</option>
-<option value="chairman">Chairman</option>
-<option value="deck_captain">Deck Captain</option>
-<option value="scrutineer">Scrutineer</option>
-<option value="dj">DJ</option>
-<option value="videographer">Videographer</option>
-</select>
-<input type="text" id="new-name" placeholder="Staff name" style="flex:1">
-<button class="btn btn-primary" onclick="createSession()">+ Create Code</button>
-</div>
-<div class="sessions-list" id="sessions-list"><p style="color:#94a3b8;font-size:.8rem">Loading...</p></div>
+<div class="card ${autoAuth ? "" : "hidden"}" id="sessions-card">
+  <p class="label">Create Staff Code</p>
+  <div class="create-form">
+    <select id="new-role">
+      <option value="marshal">Marshal</option>
+      <option value="judge">Judge</option>
+      <option value="scanner">Scanner</option>
+      <option value="announcer">Announcer</option>
+      <option value="chairman">Chairman</option>
+      <option value="deck_captain">Deck Captain</option>
+      <option value="scrutineer">Scrutineer</option>
+      <option value="dj">DJ</option>
+      <option value="videographer">Videographer</option>
+    </select>
+    <input type="text" id="new-name" placeholder="Staff name" style="flex:1">
+    <button class="btn btn-primary" onclick="createSession()">+ Create</button>
+  </div>
+  <div class="sessions-list" id="sessions-list"><p style="color:#94a3b8;font-size:.8rem">Loading…</p></div>
 </div>
 
 <a class="back" href="/">← Back to Dashboard</a>
@@ -1433,23 +1467,20 @@ let adminToken=sessionStorage.getItem('eventbox_admin_token')||'';
 function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000)}
 function copy(t){navigator.clipboard.writeText(t).then(()=>showToast('Copied!'))}
 
-// QR code
-(function(){
-  const s=document.createElement('script');
-  s.src='https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
-  s.onload=function(){
-    const qr=qrcode(0,'L');
-    qr.addData(location.origin+'/staff?join='+encodeURIComponent(${JSON.stringify(ROOM_CODE)}));
-    qr.make();
-    document.getElementById('qr-admin').innerHTML=qr.createImgTag(4,6);
-  };
-  s.onerror=function(){
-    const el=document.getElementById('qr-admin');
-    el.style.cssText='text-align:center;padding:1rem;background:#fff;border-radius:8px;color:#0f172a;font-size:.8rem';
-    el.textContent='QR unavailable offline — staff can enter code manually';
-  };
-  document.head.appendChild(s);
+${autoAuth ? `
+// Auto-auth since admin_secret === room_code
+(async function(){
+  const did=localStorage.getItem('device_id')||crypto.randomUUID();
+  localStorage.setItem('device_id',did);
+  try{
+    const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_id:did,admin_secret:${JSON.stringify(ROOM_CODE)}})});
+    const d=await r.json();
+    if(r.ok){adminToken=d.token;sessionStorage.setItem('eventbox_admin_token',adminToken);loadSessions();}
+  }catch{}
 })();
+` : `
+if(adminToken){document.getElementById('auth-card').classList.add('hidden');document.getElementById('sessions-card').classList.remove('hidden');loadSessions();}
+`}
 
 async function authAdmin(){
   const code=document.getElementById('admin-code').value.trim();
@@ -1461,8 +1492,8 @@ async function authAdmin(){
     if(!r.ok)throw new Error(d.error||'Auth failed');
     adminToken=d.token;
     sessionStorage.setItem('eventbox_admin_token',adminToken);
-    document.getElementById('auth-card').style.display='none';
-    document.getElementById('sessions-card').style.display='block';
+    document.getElementById('auth-card').classList.add('hidden');
+    document.getElementById('sessions-card').classList.remove('hidden');
     loadSessions();
   }catch(e){document.getElementById('auth-error').textContent=e.message}
 }
@@ -1473,8 +1504,8 @@ async function loadSessions(){
     const d=await r.json();
     if(!r.ok)throw new Error(d.error);
     const list=document.getElementById('sessions-list');
-    if(!d.sessions||d.sessions.length===0){list.innerHTML='<p style="color:#94a3b8;font-size:.8rem">No active sessions. Create one above.</p>';return}
-    list.innerHTML=d.sessions.map(s=>'<div class="session-row"><div><strong>'+esc(s.staff_name)+'</strong><span class="role-badge">'+esc(s.role)+'</span><br><span style="font-family:monospace;font-size:.7rem;color:#38bdf8;cursor:pointer" onclick="copy(\\''+s.join_code+'\\')">Code: '+s.join_code+'</span></div><button class="btn btn-danger" onclick="revoke(\\''+s.id+'\\')">Revoke</button></div>').join('');
+    if(!d.sessions||d.sessions.length===0){list.innerHTML='<p style="color:#94a3b8;font-size:.8rem;padding:.5rem 0">No active sessions yet. Create one above.</p>';return}
+    list.innerHTML=d.sessions.map(s=>'<div class="session-row"><div><strong>'+esc(s.staff_name)+'</strong><span class="role-badge">'+esc(s.role)+'</span><br><span class="code-tag" onclick="copy(\\''+s.join_code+'\\')">'+s.join_code+'</span></div><button class="btn btn-danger" onclick="revoke(\\''+s.id+'\\')">Revoke</button></div>').join('');
   }catch(e){document.getElementById('sessions-list').innerHTML='<p style="color:#f87171;font-size:.8rem">'+esc(e.message)+'</p>'}
 }
 
@@ -1500,13 +1531,6 @@ async function revoke(id){
     await fetch('/api/staff-sessions/revoke',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken},body:JSON.stringify({session_id:id})});
     loadSessions();
   }catch(e){showToast('Error: '+e.message)}
-}
-
-// Auto-auth if token exists
-if(adminToken){
-  document.getElementById('auth-card').style.display='none';
-  document.getElementById('sessions-card').style.display='block';
-  loadSessions();
 }
 </script></body></html>`;
     return new Response(html, { headers: { "content-type": "text/html" } });
@@ -1657,7 +1681,7 @@ function render(){
   let html='<input class="search-bar" placeholder="Search by name or number…" oninput="searchTerm=this.value;render()" value="'+esc(searchTerm)+'">';
   html+='<div class="tabs"><div class="tab '+(searchTerm?'':'active')+'" onclick="searchTerm=\\'\\';render()">All<span class="count-badge">'+credentials.length+'</span></div></div>';
   if(unchecked.length===0&&checked.length===0){
-    html+='<div class="empty">No credentials loaded yet.<br>Ensure event data has been synced to EventBox.</div>';
+    html+='<div class="empty"><p style="font-size:1.1rem;margin-bottom:.75rem">📷 No credentials loaded yet</p><p style="color:#94a3b8;font-size:.8rem;line-height:1.6">The event organizer needs to sync credential data from the cloud app.<br>Once synced, attendees will appear here for check-in.</p><p style="color:#4ade80;font-size:.75rem;margin-top:.75rem">✓ You\\'re connected — data will appear automatically.</p></div>';
   }
   unchecked.forEach(c=>{
     html+='<div class="list-item"><div class="num">'+(c.competitor_number||'—')+'</div><div class="info"><div class="name">'+esc(c.person_name||'Unknown')+'</div><div class="detail">'+esc(c.credential_type||'competitor')+'</div></div><button class="btn btn-check" onclick="doCheckin(\\''+c.id+'\\')">Check In</button></div>';
@@ -1713,7 +1737,7 @@ function render(){
   const list=currentTab==='active'?active:done;
   let html='<div class="tabs"><div class="tab '+(currentTab==='active'?'active':'')+'" onclick="currentTab=\\'active\\';render()">Active<span class="count-badge">'+active.length+'</span></div><div class="tab '+(currentTab==='done'?'active':'')+'" onclick="currentTab=\\'done\\';render()">Completed<span class="count-badge">'+done.length+'</span></div></div>';
   if(list.length===0){
-    html+='<div class="empty">No heats in this category.<br>Ensure schedule data has been synced to EventBox.</div>';
+    html+='<div class="empty"><p style="font-size:1.1rem;margin-bottom:.75rem">📋 No heats loaded yet</p><p style="color:#94a3b8;font-size:.8rem;line-height:1.6">The event organizer needs to sync schedule data from the cloud app.<br>Once synced, your heats will appear here automatically.</p><p style="color:#4ade80;font-size:.75rem;margin-top:.75rem">✓ You\\'re connected — you\\'ll be notified when heats arrive.</p></div>';
   }
   list.forEach(h=>{
     const status=heatStatuses[h.id]||'scheduled';
