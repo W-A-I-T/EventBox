@@ -25,9 +25,9 @@ import { Database } from "jsr:@db/sqlite@0.12";
 // ---------------------------------------------------------------------------
 const PORT = Number(Deno.env.get("EVENTBOX_PORT") ?? 8787);
 const DB_PATH = Deno.env.get("EVENTBOX_DB") ?? "./eventbox.sqlite";
-const ROOM_CODE =
-  Deno.env.get("EVENTBOX_ROOM_CODE") ??
-  String(Math.floor(100000 + Math.random() * 900000));
+// Room code: env override > SQLite persisted > random
+const _ROOM_CODE_ENV = Deno.env.get("EVENTBOX_ROOM_CODE");
+let ROOM_CODE = _ROOM_CODE_ENV ?? String(Math.floor(100000 + Math.random() * 900000));
 const ADMIN_SECRET =
   Deno.env.get("EVENTBOX_ADMIN_SECRET") ??
   ROOM_CODE;
@@ -190,7 +190,25 @@ CREATE TABLE IF NOT EXISTS staff_sessions (
   expires_at     INTEGER NOT NULL,
   revoked_at     INTEGER
 );
+
+-- Server config persistence (room code, etc.)
+CREATE TABLE IF NOT EXISTS server_config (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
+
+// Persist / restore room code
+if (!_ROOM_CODE_ENV) {
+  try {
+    const rows = queryRows(`SELECT value FROM server_config WHERE key='room_code'`, []);
+    if (rows.length > 0) {
+      ROOM_CODE = String(rows[0][0]);
+    } else {
+      queryRun(`INSERT INTO server_config(key, value) VALUES('room_code', ?)`, [ROOM_CODE]);
+    }
+  } catch { /* first run — table just created, write below */ }
+}
 
 // Initialize cached event name from existing ref_data
 refreshCachedEventName();
@@ -788,6 +806,13 @@ summary:hover{color:#94a3b8}
   </div>
   <div id="generated-code" class="hidden"></div>
   <div class="fallback-code">Or share room code: <strong>${escapeHtml(ROOM_CODE)}</strong></div>
+  <div style="margin-top:.75rem;border-top:1px solid #334155;padding-top:.75rem">
+    <div class="section-title" style="margin-bottom:.5rem"><span class="icon">📦</span> Import Event Data</div>
+    <p style="font-size:.75rem;color:#64748b;margin-bottom:.5rem">Load a JSON file exported from ChasséFlow (for venues with no internet)</p>
+    <input type="file" id="import-file" accept=".json" style="display:none" onchange="importFile(this)">
+    <button class="btn btn-primary" style="font-size:.75rem;padding:.4rem .8rem" onclick="document.getElementById('import-file').click()">📂 Import from file</button>
+    <span id="import-status" style="font-size:.75rem;color:#94a3b8;margin-left:.5rem"></span>
+  </div>
 </div>
 
 <!-- Server Status -->
@@ -924,6 +949,28 @@ async function revoke(id){
     await fetch('/api/staff-sessions/revoke',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken},body:JSON.stringify({session_id:id})});
     loadRoster();
   }catch(e){showToast('Error: '+e.message)}
+}
+
+// --- File import ---
+async function importFile(input){
+  const file=input.files[0];
+  if(!file)return;
+  const status=document.getElementById('import-status');
+  status.textContent='Importing…';status.style.color='#94a3b8';
+  try{
+    const text=await file.text();
+    const data=JSON.parse(text);
+    if(!data.tables||!Array.isArray(data.tables))throw new Error('Invalid format — expected { tables: [...] }');
+    const r=await fetch('/api/sync-ref',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken},body:text});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||'Import failed');
+    status.textContent='✓ Imported '+d.synced+' tables';status.style.color='#4ade80';
+    showToast('Event data imported!');
+    setTimeout(()=>location.reload(),1500);
+  }catch(e){
+    status.textContent='✗ '+e.message;status.style.color='#f87171';
+  }
+  input.value='';
 }
 
 // --- Sync refresh ---
@@ -1787,9 +1834,44 @@ const ROLE=${safeRole};
 const BASE=location.origin;
 const AUTH={'authorization':'Bearer '+TOKEN,'content-type':'application/json'};
 
+// --- Local op queue (survives WS disconnects and page reloads) ---
+const OP_QUEUE_KEY='eb_pending_ops';
+function getOpQueue(){try{return JSON.parse(localStorage.getItem(OP_QUEUE_KEY)||'[]')}catch{return[]}}
+function saveOpQueue(q){localStorage.setItem(OP_QUEUE_KEY,JSON.stringify(q))}
+function queueOp(op){const q=getOpQueue();q.push(op);saveOpQueue(q)}
+async function drainOpQueue(){
+  const q=getOpQueue();
+  if(q.length===0)return;
+  try{
+    const r=await fetch(BASE+'/ops/batch',{method:'POST',headers:AUTH,body:JSON.stringify({ops:q})});
+    if(r.ok){
+      const d=await r.json();
+      // Remove successfully applied ops
+      const accepted=new Set((d.results||[]).filter(r=>r.accepted).map(r=>r.op_id));
+      const remaining=q.filter(op=>!accepted.has(op.op_id));
+      saveOpQueue(remaining);
+    }
+  }catch{/* will retry on next drain */}
+}
+// Drain on load and periodically
+drainOpQueue();
+setInterval(drainOpQueue,10000);
+
 async function api(path,opts){
   const r=await fetch(BASE+path,{headers:AUTH,...opts});
   return r.json();
+}
+
+// Resilient op submit: try HTTP, fall back to queue
+async function submitOp(op){
+  try{
+    const r=await fetch(BASE+'/ops/batch',{method:'POST',headers:AUTH,body:JSON.stringify({ops:[op]})});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    return await r.json();
+  }catch{
+    queueOp(op);
+    return {ok:false,queued:true};
+  }
 }
 
 // Fix #16: Debounce loadData — max once per second
@@ -1853,7 +1935,7 @@ function render(){
 
 async function doCheckin(credId){
   const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'checkin',created_at_ms:Date.now(),payload:{credential_id:credId,status:'checked_in'}};
-  await api('/ops/batch',{method:'POST',body:JSON.stringify({ops:[op]})});
+  await submitOp(op);
   checkins[credId]='checked_in';
   render();
 }
@@ -1916,7 +1998,7 @@ function render(){
 
 async function setHeatState(heatId,newStatus){
   const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'heat_state',created_at_ms:Date.now(),payload:{heat_id:heatId,status:newStatus}};
-  await api('/ops/batch',{method:'POST',body:JSON.stringify({ops:[op]})});
+  await submitOp(op);
   heatStatuses[heatId]=newStatus;
   render();
 }
@@ -2045,6 +2127,7 @@ setInterval(updateConnUI,2000);
       const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//' +location.host+'/ws?token='+TOKEN);
       ws.onopen=function(){
         backoff=1000;wsState='connected';updateConnUI();
+        drainOpQueue(); // Flush queued ops on reconnect
         // Start ping every 5s
         if(pingInterval)clearInterval(pingInterval);
         pingInterval=setInterval(()=>{
