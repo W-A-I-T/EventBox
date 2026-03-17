@@ -318,7 +318,16 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
     let port = s.port;
     let event_id = s.event_id.clone();
 
-    let server_binary = resolve_server_binary(app)?;
+    let server_binary = resolve_server_binary(app).map_err(|e| {
+        let _ = app.emit(
+            "server-status",
+            serde_json::json!({
+                "running": false,
+                "error": &e,
+            }),
+        );
+        e
+    })?;
 
     let deno_args = |ts_path: &std::path::Path| -> Vec<String> {
         vec![
@@ -691,13 +700,6 @@ pub fn run() {
                     drop(s);
                     if let Err(e) = start_server(&state, &handle) {
                         eprintln!("[EventBox] auto-start failed: {}", e);
-                        let _ = handle.emit(
-                            "server-status",
-                            serde_json::json!({
-                                "running": false,
-                                "error": e,
-                            }),
-                        );
                     }
                 }
             }
