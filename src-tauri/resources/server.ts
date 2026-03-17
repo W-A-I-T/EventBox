@@ -375,6 +375,21 @@ type ApplyResult =
 // WebSocket management
 // ---------------------------------------------------------------------------
 const wsClientsByEvent = new Map<string, Set<WebSocket>>();
+// Track device_id per WebSocket for presence detection
+const wsDeviceMap = new Map<WebSocket, string>();
+
+function getConnectedDeviceIds(): Set<string> {
+  const ids = new Set<string>();
+  const set = wsClientsByEvent.get(EVENT_ID);
+  if (!set) return ids;
+  for (const ws of set) {
+    if (ws.readyState === WebSocket.OPEN) {
+      const did = wsDeviceMap.get(ws);
+      if (did) ids.add(did);
+    }
+  }
+  return ids;
+}
 
 function broadcastToEvent(eventId: string, message: unknown, exclude?: WebSocket): void {
   const set = wsClientsByEvent.get(eventId);
@@ -706,6 +721,7 @@ header h1{font-size:1.3rem;color:#fff;display:flex;align-items:center;gap:.5rem}
 .roster-name{color:#fff;font-weight:500}
 .role-badge{display:inline-block;background:#22c55e20;color:#4ade80;padding:1px 8px;border-radius:99px;font-size:.65rem;font-weight:600;margin-left:.35rem}
 .presence-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;flex-shrink:0;margin-left:auto}
+.presence-dot.offline{background:#64748b}
 .no-sessions{color:#64748b;font-size:.8rem;padding:.75rem 0}
 /* Invite staff */
 .invite-form{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.75rem}
@@ -775,7 +791,7 @@ summary:hover{color:#94a3b8}
 <div class="sync-bar">
   <span class="sync-dot ${Number(heatCount) > 0 ? "ok" : "none"}"></span>
   <span class="sync-info"><strong>${heatCount} heats</strong> synced · last sync ${escapeHtml(lastSyncStr)}</span>
-  <button class="sync-btn" onclick="refreshSync()">↻ Refresh</button>
+  <button class="sync-btn" onclick="refreshSync()">↻ Refresh stats</button>
 </div>
 
 <!-- Live Roster -->
@@ -909,7 +925,8 @@ async function loadRoster(cachedData){
     }
     list.innerHTML=sessions.map(s=>{
       const initials=(s.staff_name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-      return '<div class="roster-item"><div class="avatar">'+esc(initials)+'</div><div><span class="roster-name">'+esc(s.staff_name)+'</span><span class="role-badge">'+esc(s.role)+'</span></div><span class="presence-dot"></span><button class="btn btn-danger" style="margin-left:.5rem" onclick="revoke(\\''+s.id+'\\')">Revoke</button></div>';
+      const dotClass=s.online?'presence-dot':'presence-dot offline';
+      return '<div class="roster-item"><div class="avatar">'+esc(initials)+'</div><div><span class="roster-name">'+esc(s.staff_name)+'</span><span class="role-badge">'+esc(s.role)+'</span></div><span class="'+dotClass+'"></span><button class="btn btn-danger" style="margin-left:.5rem" onclick="revoke(\\''+s.id+'\\')">Revoke</button></div>';
     }).join('');
   }catch(e){
     document.getElementById('roster-list').innerHTML='<div class="no-sessions" style="color:#f87171">'+esc(e.message)+'</div>';
@@ -951,7 +968,7 @@ async function revoke(id){
   }catch(e){showToast('Error: '+e.message)}
 }
 
-// --- File import ---
+// --- File import with validation ---
 async function importFile(input){
   const file=input.files[0];
   if(!file)return;
@@ -961,6 +978,12 @@ async function importFile(input){
     const text=await file.text();
     const data=JSON.parse(text);
     if(!data.tables||!Array.isArray(data.tables))throw new Error('Invalid format — expected { tables: [...] }');
+    // Validate event_id if present
+    if(data.event_id && data.event_id!==${safeEventId}){
+      if(!confirm('This file is for a different event ('+data.event_id.slice(0,8)+'…). This server is running event '+${safeEventId}.slice(0,8)+'…. Import anyway?')){
+        status.textContent='Import cancelled';status.style.color='#94a3b8';input.value='';return;
+      }
+    }
     const r=await fetch('/api/sync-ref',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+adminToken},body:text});
     const d=await r.json();
     if(!r.ok)throw new Error(d.error||'Import failed');
@@ -973,9 +996,9 @@ async function importFile(input){
   input.value='';
 }
 
-// --- Sync refresh ---
+// --- Sync refresh (reloads stats from local SQLite — does not pull from cloud) ---
 async function refreshSync(){
-  showToast('Refreshing stats…');
+  showToast('Refreshing local stats…');
   setTimeout(()=>location.reload(),500);
 }
 
@@ -1300,6 +1323,7 @@ handleAuth();
 
     socket.onopen = () => {
       set!.add(socket);
+      wsDeviceMap.set(socket, claims.device_id);
       socket.send(JSON.stringify({
         type: "connected",
         event_id: EVENT_ID,
@@ -1312,13 +1336,14 @@ handleAuth();
 
     socket.onclose = () => {
       set?.delete(socket);
+      wsDeviceMap.delete(socket);
     };
 
     socket.onmessage = (e) => {
       try {
         const m = JSON.parse(e.data);
         if (m?.type === "ping") {
-          socket.send(JSON.stringify({ type: "pong", time: Date.now() }));
+          socket.send(JSON.stringify({ type: "pong", t: m.t, time: Date.now() }));
         }
         if (m?.type === "op" && m?.op) {
           const op: Op = {
@@ -1444,11 +1469,14 @@ handleAuth();
       return json({ error: "forbidden -- admin token required" }, 403);
     }
 
+    // Cross-reference with live WS connections for presence
+    const connectedDevices = getConnectedDeviceIds();
     const rows = queryRows(
       `SELECT id, role, staff_name, join_code, device_id, created_at, expires_at, revoked_at FROM staff_sessions WHERE event_id=? AND revoked_at IS NULL ORDER BY created_at DESC`,
       [EVENT_ID],
     ).map(([id, role, staff_name, join_code, device_id, created_at, expires_at, revoked_at]) => ({
       id, role, staff_name, join_code, device_id, created_at, expires_at, revoked_at,
+      online: device_id ? connectedDevices.has(String(device_id)) : false,
     }));
 
     return json({ event_id: EVENT_ID, sessions: rows });
@@ -1838,18 +1866,27 @@ const AUTH={'authorization':'Bearer '+TOKEN,'content-type':'application/json'};
 const OP_QUEUE_KEY='eb_pending_ops';
 function getOpQueue(){try{return JSON.parse(localStorage.getItem(OP_QUEUE_KEY)||'[]')}catch{return[]}}
 function saveOpQueue(q){localStorage.setItem(OP_QUEUE_KEY,JSON.stringify(q))}
-function queueOp(op){const q=getOpQueue();q.push(op);saveOpQueue(q)}
+function queueOp(op){
+  const q=getOpQueue();
+  // Dedup: skip if op_id already queued
+  if(q.some(o=>o.op_id===op.op_id))return;
+  q.push(op);saveOpQueue(q);
+}
+const DRAIN_BATCH_SIZE=30;
 async function drainOpQueue(){
   const q=getOpQueue();
   if(q.length===0)return;
+  // Drain in chunks to avoid huge payloads
+  const batch=q.slice(0,DRAIN_BATCH_SIZE);
   try{
-    const r=await fetch(BASE+'/ops/batch',{method:'POST',headers:AUTH,body:JSON.stringify({ops:q})});
+    const r=await fetch(BASE+'/ops/batch',{method:'POST',headers:AUTH,body:JSON.stringify({ops:batch})});
     if(r.ok){
       const d=await r.json();
-      // Remove successfully applied ops
-      const accepted=new Set((d.results||[]).filter(r=>r.accepted).map(r=>r.op_id));
+      const accepted=new Set((d.results||[]).filter(r=>r.accepted||r.reason==='duplicate').map(r=>r.op_id));
       const remaining=q.filter(op=>!accepted.has(op.op_id));
       saveOpQueue(remaining);
+      // If more remain, schedule next batch
+      if(remaining.length>0)setTimeout(drainOpQueue,200);
     }
   }catch{/* will retry on next drain */}
 }
@@ -1862,6 +1899,12 @@ async function api(path,opts){
   return r.json();
 }
 
+// Toast helper for queued ops
+function showQueuedToast(){
+  const t=document.getElementById('toast');
+  if(t){t.textContent='Saved offline — will sync when connected';t.style.display='block';setTimeout(()=>t.style.display='none',3000);}
+}
+
 // Resilient op submit: try HTTP, fall back to queue
 async function submitOp(op){
   try{
@@ -1870,6 +1913,7 @@ async function submitOp(op){
     return await r.json();
   }catch{
     queueOp(op);
+    showQueuedToast();
     return {ok:false,queued:true};
   }
 }
@@ -2139,7 +2183,7 @@ setInterval(updateConnUI,2000);
           const m=JSON.parse(e.data);
           if(m.type==='pong'){
             lastPongAt=Date.now();
-            const latency=m.time?(Date.now()-m.time):0;
+            const latency=m.t?(Date.now()-m.t):0;
             document.getElementById('latency-text').textContent=latency+'ms';
           }
           if(m.type==='op.applied')debouncedLoad();
