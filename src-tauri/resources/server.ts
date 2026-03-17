@@ -912,7 +912,7 @@ async function doAutoAuth(){
   try{
     const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_id:did,admin_secret:ROOM_CODE})});
     const d=await r.json();
-    if(r.ok){adminToken=d.token;sessionStorage.setItem('eventbox_admin_token',adminToken);return true}
+    if(r.ok){adminToken=d.token;sessionStorage.setItem('eventbox_admin_token',adminToken);localStorage.setItem('eventbox_room_code',ROOM_CODE);return true}
   }catch{}
   return false;
 }
@@ -943,7 +943,7 @@ async function authAdmin(){
     const r=await fetch('/auth/token',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_id:did,admin_secret:pwd})});
     const d=await r.json();
     if(!r.ok)throw new Error(d.error||'Auth failed');
-    adminToken=d.token;sessionStorage.setItem('eventbox_admin_token',adminToken);
+    adminToken=d.token;sessionStorage.setItem('eventbox_admin_token',adminToken);localStorage.setItem('eventbox_room_code',ROOM_CODE);
     document.getElementById('auth-overlay').classList.add('hidden');
     loadRoster();
   }catch(e){
@@ -1090,6 +1090,7 @@ handleAuth();
       ok: true,
       time: Date.now(),
       event_id: EVENT_ID,
+      room_code: ROOM_CODE,
       version: "0.4.0",
     });
   }
