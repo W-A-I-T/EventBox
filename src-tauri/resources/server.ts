@@ -1425,9 +1425,17 @@ handleAuth();
     if (claims.role !== "event_admin") return json({ error: "admin only" }, 403);
 
     try {
-      const cloudUrl = `${CHASSEFLOW_API}/api/eventbox/export?eventId=${encodeURIComponent(EVENT_ID)}`;
+      // Call the ChasséFlow eventbox-export edge function
+      const supabaseUrl = Deno.env.get("EVENTBOX_SUPABASE_URL") || "https://gwbxaduxmnxaushcvlby.supabase.co";
+      const cloudUrl = `${supabaseUrl}/functions/v1/eventbox-export?event_id=${encodeURIComponent(EVENT_ID)}`;
+      const supabaseAnonKey = Deno.env.get("EVENTBOX_SUPABASE_ANON_KEY") || "";
+      const cloudAuthToken = Deno.env.get("EVENTBOX_CLOUD_TOKEN") || "";
       const cloudRes = await fetch(cloudUrl, {
-        headers: { "accept": "application/json" },
+        headers: {
+          "accept": "application/json",
+          "apikey": supabaseAnonKey,
+          ...(cloudAuthToken ? { "authorization": `Bearer ${cloudAuthToken}` } : {}),
+        },
         signal: AbortSignal.timeout(15000),
       });
 
@@ -2178,13 +2186,19 @@ function render(){
   }
   unchecked.forEach(c=>{
     const paid=payments[c.id];
-    const paidBadge=paid&&paid.status==='confirmed'?'<span style="color:#4ade80;font-size:.7rem;margin-left:.5rem">$ Paid</span>':'<span style="color:#f59e0b;font-size:.7rem;margin-left:.5rem">$ Unpaid</span>';
+    const paidMethod=paid&&paid.payment_method?paid.payment_method:'';
+    const paidLabel=paid&&paid.status==='confirmed'?('$ Paid'+(paidMethod?' ('+paidMethod+')':'')):'$ Unpaid';
+    const paidColor=paid&&paid.status==='confirmed'?'#4ade80':'#f59e0b';
+    const paidBadge='<span style="color:'+paidColor+';font-size:.7rem;margin-left:.5rem">'+paidLabel+'</span>';
     const payBtn=(!paid||paid.status!=='confirmed')?'<button class="btn" style="background:#f59e0b;color:#000;margin-right:.25rem;font-size:.75rem;padding:.35rem .6rem" onclick="markPaid(\\''+c.id+'\\')">$ Paid</button>':'';
     html+='<div class="list-item"><div class="num">'+(c.competitor_number||'—')+'</div><div class="info"><div class="name">'+esc(c.person_name||'Unknown')+'</div><div class="detail">'+esc(c.credential_type||'competitor')+paidBadge+'</div></div>'+payBtn+'<button class="btn btn-check" onclick="doCheckin(\\''+c.id+'\\')">Check In</button></div>';
   });
   checked.forEach(c=>{
     const paid=payments[c.id];
-    const paidBadge=paid&&paid.status==='confirmed'?'<span style="color:#4ade80;font-size:.7rem;margin-left:.5rem">$ Paid</span>':'<span style="color:#f59e0b;font-size:.7rem;margin-left:.5rem">$ Unpaid</span>';
+    const paidMethod=paid&&paid.payment_method?paid.payment_method:'';
+    const paidLabel=paid&&paid.status==='confirmed'?('$ Paid'+(paidMethod?' ('+paidMethod+')':'')):'$ Unpaid';
+    const paidColor=paid&&paid.status==='confirmed'?'#4ade80':'#f59e0b';
+    const paidBadge='<span style="color:'+paidColor+';font-size:.7rem;margin-left:.5rem">'+paidLabel+'</span>';
     html+='<div class="list-item" style="opacity:.6"><div class="num">'+(c.competitor_number||'—')+'</div><div class="info"><div class="name">'+esc(c.person_name||'Unknown')+'</div><div class="detail">✅ Checked in'+paidBadge+'</div></div><button class="btn btn-checked" disabled>Done</button></div>';
   });
   document.getElementById('portal-root').innerHTML=html;
@@ -2209,7 +2223,7 @@ async function doCheckin(credId){
 async function markPaid(credId){
   const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'payment_confirmed',created_at_ms:Date.now(),payload:{credential_id:credId,status:'confirmed',payment_method:'cash'}};
   await submitOp(op);
-  payments[credId]={credential_id:credId,status:'confirmed'};
+  payments[credId]={credential_id:credId,status:'confirmed',payment_method:'cash'};
   render();
 }
 ` : ""}
