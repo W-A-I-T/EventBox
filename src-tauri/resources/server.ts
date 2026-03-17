@@ -704,6 +704,10 @@ const dashboardTmpl = await Deno.readTextFile(TMPL_DIR + "dashboard.html");
 const joinTmpl = await Deno.readTextFile(TMPL_DIR + "staff-join.html");
 const portalTmpl = await Deno.readTextFile(TMPL_DIR + "portal.html");
 
+function renderTemplate(html: string, vars: Record<string, string>): string {
+  return html.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? "");
+}
+
 // ---------------------------------------------------------------------------
 // HTTP + WS server
 // ---------------------------------------------------------------------------
