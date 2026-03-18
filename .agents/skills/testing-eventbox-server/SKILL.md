@@ -124,6 +124,13 @@ The `POST /api/staff-sessions` endpoint expects `staff_name` (not `name`). Getti
 ### Deno Installer
 The Deno installer may hang at the "Edit shell configs" prompt. If it does, Ctrl+C after the binary downloads and manually add `~/.deno/bin` to PATH.
 
+### Templates Not Found in Compiled Binary
+`deno compile` does NOT bundle files read via `Deno.readTextFile()`. If the server
+crashes immediately with "No such file or directory" for template files, the
+templates need to be embedded as string literals in `server.ts`. In development
+mode (`deno run`), templates load from the filesystem. In production (compiled
+binary), embedded fallbacks are used.
+
 ### SQLite Files
 Clean up between test runs: `rm -f eventbox.sqlite eventbox.sqlite-shm eventbox.sqlite-wal`
 
@@ -132,11 +139,11 @@ Each server restart generates a new room code. Re-read it from stdout.
 
 ## CI Sync Between Repos
 - `dance-flow-control/public/eventbox/server.ts` syncs to `EventBox/src-tauri/resources/server.ts`
-- `dance-flow-control/desktop/src/dashboard.html` syncs to `EventBox/src/index.html`
-- `dance-flow-control/desktop/src-tauri/src/main.rs` syncs to `EventBox/src-tauri/src/main.rs`
+- **Only `server.ts` is synced.** `lib.rs`, `Cargo.toml`, `tauri.conf.json`, `index.html`, and `README.md` are NOT synced because EventBox has been migrated to Tauri v2 while dance-flow-control remains on Tauri v1.
 - Sync triggers: daily at 06:00 UTC, manual dispatch, or `repository_dispatch` from dance-flow-control on push to main
 - dance-flow-control has a workflow (`trigger-eventbox-sync.yml`) that auto-dispatches on push to synced files — requires `EVENTBOX_SYNC_TOKEN` secret (GitHub PAT with repo scope)
-- Fixes must go into dance-flow-control first or they get overwritten by sync
+- Fixes to `server.ts` must go into dance-flow-control first or they get overwritten by sync
+- Fixes to `lib.rs`, `Cargo.toml`, or other EventBox-only files go directly into EventBox
 
 ## Devin Secrets Needed
 None required for local server testing. The server generates its own HMAC secret on startup.

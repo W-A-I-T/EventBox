@@ -13,6 +13,9 @@ use tauri::{
     Emitter, Manager,
 };
 
+#[cfg(unix)]
+extern crate libc;
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -27,6 +30,55 @@ struct ServerState {
     /// generation at spawn time and compares it later to detect whether
     /// the process it was monitoring is still the "current" one.
     generation: u64,
+}
+
+// ---------------------------------------------------------------------------
+// PID file management (Fix #7: orphan cleanup)
+// ---------------------------------------------------------------------------
+
+/// PID file path for detecting orphaned server processes from previous crashes.
+fn pidfile_path() -> PathBuf {
+    std::env::temp_dir().join("eventbox-server.pid")
+}
+
+fn write_pidfile(pid: u32) {
+    if let Err(e) = std::fs::write(pidfile_path(), pid.to_string()) {
+        eprintln!("[EventBox] Failed to write PID file: {}", e);
+    }
+}
+
+/// Attempt to clean up a leftover server process from a previous crash.
+fn cleanup_orphan() {
+    let path = pidfile_path();
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Ok(pid) = contents.trim().parse::<u32>() {
+            eprintln!(
+                "[EventBox] Found leftover PID file (pid={}), attempting cleanup",
+                pid
+            );
+            #[cfg(unix)]
+            {
+                // Send SIGTERM; don't check result — process may already be gone
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+fn remove_pidfile() {
+    let _ = std::fs::remove_file(pidfile_path());
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +509,12 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
             }
 
             s.child = Some(child);
+
+            // Fix #7: Write PID file for orphan cleanup on next launch
+            if let Some(ref child) = s.child {
+                write_pidfile(child.id());
+            }
+
             update_tray(app, true);
 
             let _ = app.emit(
@@ -498,6 +556,10 @@ fn stop_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
         let _ = child.wait();
     }
     s.room_code = None;
+
+    // Fix #7: Remove PID file on clean shutdown
+    remove_pidfile();
+
     update_tray(app, false);
     // Only emit the event if a server was actually running. This avoids
     // sending a bare { running: false } during set_event_id_and_start()
@@ -617,6 +679,9 @@ pub fn run() {
         }
     }
 
+    // Fix #7: Clean up any orphaned server process from a previous crash
+    cleanup_orphan();
+
     let server_state = Mutex::new(ServerState {
         child: None,
         room_code: None,
@@ -645,6 +710,11 @@ pub fn run() {
                 MenuItemBuilder::with_id("status", "EventBox \u{2014} Stopped")
                     .enabled(false)
                     .build(app)?;
+            // Fix #2: Add "Show Dashboard" menu item
+            let show_item = MenuItemBuilder::with_id("show", "Show Dashboard")
+                .enabled(true)
+                .build(app)?;
+
             let start_item = MenuItemBuilder::with_id("start", "Start Server")
                 .enabled(true)
                 .build(app)?;
@@ -658,6 +728,7 @@ pub fn run() {
             let menu = MenuBuilder::new(app)
                 .item(&status_item)
                 .separator()
+                .item(&show_item) // Fix #2
                 .item(&start_item)
                 .item(&stop_item)
                 .separator()
@@ -679,6 +750,14 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     let state = app.state::<Mutex<ServerState>>();
                     match event.id().as_ref() {
+                        // Fix #2: Handle "Show Dashboard" menu item
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }
                         "start" => {
                             let _ = start_server(&state, app);
                         }
@@ -688,6 +767,21 @@ pub fn run() {
                             std::process::exit(0);
                         }
                         _ => {}
+                    }
+                })
+                // Fix #2: Left-click tray icon shows main window
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
                     }
                 })
                 .build(app)?;
