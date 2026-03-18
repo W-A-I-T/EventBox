@@ -670,6 +670,8 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                         return Ok(());
                     }
                     Err(e) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
                         eprintln!(
                             "[EventBox] try_wait error for {}: {} \u{2014} trying next fallback",
                             label, e
