@@ -567,7 +567,25 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                             child.id()
                         );
 
-                        // Read stdout in background to capture room code
+                        // Re-acquire the lock to store the child and bump generation.
+                        let mut s = state.lock().unwrap();
+
+                        // Guard against a concurrent start that raced us.
+                        if s.child.is_some() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Ok(());
+                        }
+
+                        // Bump the generation counter and capture it so the
+                        // reader threads can later tell whether this specific
+                        // process instance is still the "current" one.
+                        s.generation += 1;
+                        let spawn_generation = s.generation;
+
+                        // Read stdout in background to capture room code.
+                        // Spawned after the race guard so we never create a
+                        // reader thread for a child that was immediately killed.
                         if let Some(stdout) = child.stdout.take() {
                             let app_handle = app.clone();
                             std::thread::spawn(move || {
@@ -577,12 +595,16 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                                     if line.contains("Room code:") {
                                         if let Some(code) = line.split("Room code:").nth(1) {
                                             let code = code.trim().to_string();
-                                            {
-                                                let state_ref =
-                                                    app_handle.state::<Mutex<ServerState>>();
-                                                let mut s = state_ref.lock().unwrap();
-                                                s.room_code = Some(code.clone());
+                                            // Check generation before updating state
+                                            // to avoid clobbering a newer process.
+                                            let state_ref =
+                                                app_handle.state::<Mutex<ServerState>>();
+                                            let mut s = state_ref.lock().unwrap();
+                                            if s.generation != spawn_generation {
+                                                return; // stale — a newer process replaced us
                                             }
+                                            s.room_code = Some(code.clone());
+                                            drop(s); // release lock before emit
                                             let _ = app_handle.emit(
                                                 "server-status",
                                                 serde_json::json!({
@@ -596,22 +618,7 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                             });
                         }
 
-                        // Re-acquire the lock to store the child and bump generation.
-                        let mut s = state.lock().unwrap();
-
-                        // Guard against a concurrent start that raced us.
-                        if s.child.is_some() {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            return Ok(());
-                        }
-
                         // Read stderr for error reporting.
-                        // Bump the generation counter and capture it so the
-                        // thread can later tell whether this specific process
-                        // instance is still the "current" one.
-                        s.generation += 1;
-                        let spawn_generation = s.generation;
                         if let Some(stderr) = child.stderr.take() {
                             let app_handle2 = app.clone();
                             std::thread::spawn(move || {
