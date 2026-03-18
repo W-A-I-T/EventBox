@@ -47,18 +47,68 @@ fn write_pidfile(pid: u32) {
     }
 }
 
+/// Check whether a given PID belongs to an eventbox-server process.
+/// Returns false if the process doesn't exist or isn't ours.
+fn is_eventbox_process(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // Read /proc/<pid>/cmdline — fields are NUL-separated
+        let cmdline_path = format!("/proc/{}/cmdline", pid);
+        if let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) {
+            return cmdline.contains("eventbox-server") || cmdline.contains("server.ts");
+        }
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+        {
+            let comm = String::from_utf8_lossy(&output.stdout);
+            return comm.contains("eventbox-server") || comm.contains("deno") || comm.contains("server.ts");
+        }
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(output) = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            return text.contains("eventbox-server");
+        }
+        return false;
+    }
+}
+
 /// Attempt to clean up a leftover server process from a previous crash.
+/// Verifies the PID still belongs to an eventbox-server before killing to
+/// avoid terminating an unrelated process that reused the PID.
 fn cleanup_orphan() {
     let path = pidfile_path();
     if let Ok(contents) = std::fs::read_to_string(&path) {
         if let Ok(pid) = contents.trim().parse::<u32>() {
             eprintln!(
-                "[EventBox] Found leftover PID file (pid={}), attempting cleanup",
+                "[EventBox] Found leftover PID file (pid={}), checking process",
                 pid
             );
+            if !is_eventbox_process(pid) {
+                eprintln!(
+                    "[EventBox] PID {} is not an eventbox-server process (or already exited), removing stale PID file",
+                    pid
+                );
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+            eprintln!("[EventBox] PID {} confirmed as eventbox-server, sending kill signal", pid);
             #[cfg(unix)]
             {
-                // Send SIGTERM; don't check result — process may already be gone
                 unsafe {
                     libc::kill(pid as i32, libc::SIGTERM);
                 }
