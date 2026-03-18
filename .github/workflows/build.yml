@@ -68,30 +68,31 @@ jobs:
       - name: Verify compiled server binary
         shell: bash
         run: |
-          FILE="${{ matrix.server-output }}"
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: Server binary not found at $FILE"
-            exit 1
-          fi
-          SIZE=$(stat --format='%s' "$FILE" 2>/dev/null || stat -f '%z' "$FILE")
-          echo "Binary size: $SIZE bytes"
-          if [ "$SIZE" -lt 1000 ]; then
-            echo "ERROR: Server binary is suspiciously small ($SIZE bytes)"
-            exit 1
-          fi
-          # Deno standalone binaries end with the 8-byte trailer "d3n0l4nd".
+          # Uses Python for cross-platform consistency (available on all
+          # GitHub Actions runners: Linux, macOS, Windows).
+          python3 -c "
+          import os, sys
+          path = sys.argv[1]
+          if not os.path.isfile(path):
+              print(f'ERROR: Server binary not found at {path}')
+              sys.exit(1)
+          size = os.path.getsize(path)
+          print(f'Binary size: {size} bytes')
+          if size < 1000:
+              print(f'ERROR: Server binary is suspiciously small ({size} bytes)')
+              sys.exit(1)
+          with open(path, 'rb') as f:
+              f.seek(-8, 2)
+              trailer = f.read(8)
+          # Deno standalone binaries end with the 8-byte trailer 'd3n0l4nd'.
           # If this is missing the binary will fail at runtime with
-          # "Could not find standalone binary section."
-          TRAILER=$(tail -c 8 "$FILE" | od -A n -t x1 | tr -d ' \n')
-          EXPECTED="6433 6e30 6c34 6e64"
-          EXPECTED_HEX=$(echo "$EXPECTED" | tr -d ' ')
-          if [ "$TRAILER" != "$EXPECTED_HEX" ]; then
-            echo "ERROR: Binary missing Deno standalone trailer (d3n0l4nd)"
-            echo "  Got: $TRAILER"
-            echo "  Expected: $EXPECTED_HEX"
-            exit 1
-          fi
-          echo "Binary validation passed (size=$SIZE, trailer OK)"
+          # 'Could not find standalone binary section.'
+          if trailer != b'd3n0l4nd':
+              print(f'ERROR: Binary missing Deno standalone trailer (d3n0l4nd)')
+              print(f'  Got: {trailer!r}')
+              sys.exit(1)
+          print(f'Binary validation passed (size={size}, trailer OK)')
+          " "${{ matrix.server-output }}"
 
       - name: Build Tauri app
         run: cd src-tauri && cargo tauri build

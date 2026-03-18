@@ -141,6 +141,12 @@ fn remove_pidfile() {
 /// present, `false` when it is definitively missing, and `true`
 /// (optimistic) on any I/O error so we never block a binary that might
 /// actually work.
+///
+/// The "d3n0l4nd" trailer has been stable across Deno 1.x and 2.x.
+/// If a future Deno version changes this magic, the check will return
+/// `false` for valid binaries — but the fallback loop in `start_server`
+/// will still try them via `try_wait()` crash detection, and ultimately
+/// fall through to system Deno + server.ts which always works.
 fn has_deno_standalone_trailer(path: &std::path::Path) -> bool {
     use std::io::{Seek, SeekFrom};
     let mut file = match std::fs::File::open(path) {
@@ -454,13 +460,15 @@ fn check_deno(app_handle: tauri::AppHandle) -> DenoStatus {
 // ---------------------------------------------------------------------------
 
 fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<(), String> {
-    let mut s = state.lock().unwrap();
-    if s.child.is_some() {
-        return Ok(()); // already running
-    }
-
-    let port = s.port;
-    let event_id = s.event_id.clone();
+    // Acquire the lock briefly to check state and read config, then drop it
+    // so the fallback loop (which may sleep) does not hold the mutex.
+    let (port, event_id) = {
+        let s = state.lock().unwrap();
+        if s.child.is_some() {
+            return Ok(()); // already running
+        }
+        (s.port, s.event_id.clone())
+    };
 
     let candidates = resolve_server_binaries(app);
     if candidates.is_empty() {
@@ -529,6 +537,7 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                 // Give the process a moment to crash or stabilize.
                 // Corrupt/incompatible binaries exit instantly, so a short
                 // sleep is enough to detect them without slowing normal startup.
+                // NOTE: The mutex is NOT held here — it was dropped above.
                 std::thread::sleep(std::time::Duration::from_millis(500));
 
                 match child.try_wait() {
@@ -585,6 +594,16 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
                                     }
                                 }
                             });
+                        }
+
+                        // Re-acquire the lock to store the child and bump generation.
+                        let mut s = state.lock().unwrap();
+
+                        // Guard against a concurrent start that raced us.
+                        if s.child.is_some() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Ok(());
                         }
 
                         // Read stderr for error reporting.
