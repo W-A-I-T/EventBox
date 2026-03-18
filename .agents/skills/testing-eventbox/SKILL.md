@@ -8,17 +8,17 @@
 curl -fsSL https://deno.land/install.sh | sh
 export PATH="$HOME/.deno/bin:$PATH"
 
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85.0
+# Install Rust (stable toolchain — Tauri v2 no longer needs 1.85 pin)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 
-# Install Tauri CLI
-cargo install tauri-cli@1.6.6
+# Install Tauri CLI v2
+cargo install tauri-cli --version "^2"
 
-# Install Linux dependencies
+# Install Linux dependencies (note: 4.1, not 4.0)
 sudo apt-get update && sudo apt-get install -y \
-  libwebkit2gtk-4.0-dev libgtk-3-dev libappindicator3-dev \
-  librsvg2-dev patchelf libfuse2
+  libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf libfuse2 libssl-dev
 ```
 
 ## Building
@@ -32,13 +32,13 @@ deno compile --allow-net --allow-read --allow-write --allow-env --allow-ffi --un
 
 ### Build the Tauri app
 ```bash
-RUSTUP_TOOLCHAIN=1.85.0 cargo tauri build
+cargo tauri build
 # Outputs: src-tauri/target/release/bundle/deb/*.deb, *.rpm, *.AppImage
 ```
 
 ### Dev mode
 ```bash
-RUSTUP_TOOLCHAIN=1.85.0 cargo tauri dev
+cargo tauri dev
 ```
 
 ## Testing the App
@@ -94,7 +94,8 @@ setTimeout(() => showError('persistent', true), 500);
 ```
 
 ## Key Architecture Notes
-- `src-tauri/src/main.rs`: Rust backend - server lifecycle, CLI arg parsing, resource resolution
+- `src-tauri/src/lib.rs`: Rust backend — server lifecycle, CLI arg parsing, resource resolution
+  (NOTE: Tauri v2 uses lib.rs as the main entry point, not main.rs. main.rs is a thin wrapper.)
 - `src/index.html`: Frontend UI - single HTML file with inline JS/CSS
 - `src-tauri/resources/server.ts`: Deno server source (compiled to `eventbox-server` binary)
 - `src-tauri/tauri.conf.json`: Tauri config - resources glob, bundle settings, dependencies

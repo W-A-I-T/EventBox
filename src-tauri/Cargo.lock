@@ -830,6 +830,7 @@ dependencies = [
 name = "eventbox-desktop"
 version = "0.3.29"
 dependencies = [
+ "libc",
  "local-ip-address",
  "serde",
  "serde_json",
