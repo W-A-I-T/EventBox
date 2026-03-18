@@ -28,7 +28,7 @@ const DB_PATH = Deno.env.get("EVENTBOX_DB") ?? "./eventbox.sqlite";
 // Room code: env override > SQLite persisted > random
 const _ROOM_CODE_ENV = Deno.env.get("EVENTBOX_ROOM_CODE");
 let ROOM_CODE = _ROOM_CODE_ENV ?? String(Math.floor(100000 + Math.random() * 900000));
-const ADMIN_SECRET =
+let ADMIN_SECRET =
   Deno.env.get("EVENTBOX_ADMIN_SECRET") ??
   ROOM_CODE;
 const EVENT_ID = Deno.env.get("EVENTBOX_EVENT_ID") ?? "";
@@ -224,6 +224,8 @@ if (!_ROOM_CODE_ENV) {
     }
   } catch { /* first run — table just created, write below */ }
 }
+// Re-sync ADMIN_SECRET after room code restoration (avoid stale value lockout)
+if (!Deno.env.get("EVENTBOX_ADMIN_SECRET")) { ADMIN_SECRET = ROOM_CODE; }
 
 // Initialize cached event name from existing ref_data
 refreshCachedEventName();
@@ -712,7 +714,7 @@ function renderTemplate(html: string, vars: Record<string, string>): string {
 // HTTP + WS server
 // ---------------------------------------------------------------------------
 Deno.serve({ port: PORT }, async (req) => {
-SERVER_START = Date.now(); // Reflect actual bind time on first request (close enough)
+// SERVER_START is set at module init (line 50), no need to reset per-request
   const url = new URL(req.url);
 
   // CORS preflight
@@ -1089,9 +1091,9 @@ SERVER_START = Date.now(); // Reflect actual bind time on first request (close e
           const joinCode = crypto.randomUUID().slice(0, 6).toUpperCase();
           const expiresAt = Date.now() + TOKEN_TTL_MS;
           queryRun(
-            `INSERT INTO staff_sessions(id, event_id, role, staff_name, join_code, device_id, token, expires_at)
+            `INSERT INTO staff_sessions(id, event_id, role, staff_name, join_code, device_id, created_at, expires_at)
              VALUES(?,?,?,?,?,?,?,?)`,
-            [sessionId, EVENT_ID, er.role, staffName, joinCode, `cloud_${er.user_id}`, crypto.randomUUID(), expiresAt],
+            [sessionId, EVENT_ID, er.role, staffName, joinCode, `cloud_${er.user_id}`, Date.now(), expiresAt],
           );
         }
       }
@@ -1154,7 +1156,7 @@ SERVER_START = Date.now(); // Reflect actual bind time on first request (close e
         refreshCachedEventName();
       }
 
-      return json({ ok: true, synced: syncCount, source: CHASSEFLOW_API });
+      return json({ ok: true, synced: syncCount, source: "cloud" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("AbortError") || msg.includes("timeout")) {
@@ -1487,7 +1489,7 @@ function render(){
   }
   unchecked.forEach(c=>{
     const paid=payments[c.id];
-    const paidMethod=paid&&paid.payment_method?paid.payment_method:'';
+    const paidMethod=paid&&paid.payment_method?esc(paid.payment_method):'';
     const paidLabel=paid&&paid.status==='confirmed'?('$ Paid'+(paidMethod?' ('+paidMethod+')':'')):'$ Unpaid';
     const paidColor=paid&&paid.status==='confirmed'?'#4ade80':'#f59e0b';
     const paidBadge='<span style="color:'+paidColor+';font-size:.7rem;margin-left:.5rem">'+paidLabel+'</span>';
@@ -1496,7 +1498,7 @@ function render(){
   });
   checked.forEach(c=>{
     const paid=payments[c.id];
-    const paidMethod=paid&&paid.payment_method?paid.payment_method:'';
+    const paidMethod=paid&&paid.payment_method?esc(paid.payment_method):'';
     const paidLabel=paid&&paid.status==='confirmed'?('$ Paid'+(paidMethod?' ('+paidMethod+')':'')):'$ Unpaid';
     const paidColor=paid&&paid.status==='confirmed'?'#4ade80':'#f59e0b';
     const paidBadge='<span style="color:'+paidColor+';font-size:.7rem;margin-left:.5rem">'+paidLabel+'</span>';
