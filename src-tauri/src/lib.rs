@@ -22,6 +22,11 @@ extern crate libc;
 
 struct ServerState {
     child: Option<Child>,
+    /// Holds the child process between spawn and commit.  `start_server`
+    /// stores the freshly-spawned process here *before* sleeping so that
+    /// a concurrent `stop_server` call can reach and kill it even though
+    /// it has not yet been promoted to `child`.
+    pending_child: Option<Child>,
     room_code: Option<String>,
     port: u16,
     event_id: String,
@@ -464,8 +469,8 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
     // so the fallback loop (which may sleep) does not hold the mutex.
     let (port, event_id) = {
         let s = state.lock().unwrap();
-        if s.child.is_some() {
-            return Ok(()); // already running
+        if s.child.is_some() || s.pending_child.is_some() {
+            return Ok(()); // already running or a start is in progress
         }
         (s.port, s.event_id.clone())
     };
@@ -534,11 +539,36 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
 
         match cmd.spawn() {
             Ok(mut child) => {
+                // Store the child in `pending_child` so that a concurrent
+                // `stop_server` can kill it during the stabilisation sleep.
+                {
+                    let mut s = state.lock().unwrap();
+                    s.pending_child = Some(child);
+                    drop(s);
+                }
+
                 // Give the process a moment to crash or stabilize.
                 // Corrupt/incompatible binaries exit instantly, so a short
                 // sleep is enough to detect them without slowing normal startup.
                 // NOTE: The mutex is NOT held here — it was dropped above.
                 std::thread::sleep(std::time::Duration::from_millis(500));
+
+                // Take the child back.  If `stop_server` ran during the
+                // sleep it will have killed and cleared `pending_child`,
+                // so `None` here means we were cancelled.
+                let mut child = {
+                    let mut s = state.lock().unwrap();
+                    match s.pending_child.take() {
+                        Some(c) => c,
+                        None => {
+                            eprintln!(
+                                "[EventBox] {} start cancelled by concurrent stop",
+                                label
+                            );
+                            return Ok(());
+                        }
+                    }
+                };
 
                 match child.try_wait() {
                     Ok(Some(_exit_status)) => {
@@ -716,10 +746,17 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
 
 fn stop_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
     let mut s = state.lock().unwrap();
-    let was_running = s.child.is_some();
+    let was_running = s.child.is_some() || s.pending_child.is_some();
     if let Some(mut child) = s.child.take() {
         let _ = child.kill();
         let _ = child.wait();
+    }
+    // Kill any in-flight child that start_server spawned but has not yet
+    // promoted to `child`.  Without this, a concurrent stop+start could
+    // leave an orphaned process running with outdated config.
+    if let Some(mut pending) = s.pending_child.take() {
+        let _ = pending.kill();
+        let _ = pending.wait();
     }
     s.room_code = None;
 
@@ -850,6 +887,7 @@ pub fn run() {
 
     let server_state = Mutex::new(ServerState {
         child: None,
+        pending_child: None,
         room_code: None,
         port,
         event_id: event_id.clone(),
