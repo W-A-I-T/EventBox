@@ -81,7 +81,7 @@ fn is_eventbox_process(pid: u32) -> bool {
             .output()
         {
             let text = String::from_utf8_lossy(&output.stdout);
-            return text.contains("eventbox-server");
+            return text.contains("eventbox-server") || text.contains("deno");
         }
         return false;
     }
