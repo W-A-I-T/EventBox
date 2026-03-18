@@ -54,11 +54,11 @@ EVENTBOX_EVENT_ID="your-event-uuid" EVENTBOX_PORT=9090 ./EventBox
 |------|---------|---------|
 | **Rust** | 1.70+ | [rustup.rs](https://rustup.rs) |
 | **Deno** | 2.x | [deno.land](https://deno.land/#installation) |
-| **Tauri CLI** | 1.x | `cargo install tauri-cli --version "^1"` |
+| **Tauri CLI** | 2.x | `cargo install tauri-cli --version "^2"` |
 
 **Linux only:**
 ```bash
-sudo apt install libwebkit2gtk-4.0-dev build-essential libssl-dev \
+sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev \
   libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 

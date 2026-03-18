@@ -27,6 +27,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 local-ip-address = "0.6"
 
+# Fix #7: libc needed for SIGTERM on orphaned server processes (Unix only)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
