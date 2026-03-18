@@ -3,7 +3,7 @@
     windows_subsystem = "windows"
 )]
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -135,6 +135,28 @@ fn remove_pidfile() {
 // Server binary resolution
 // ---------------------------------------------------------------------------
 
+/// Check whether a file looks like a valid Deno standalone binary by
+/// verifying the trailing magic bytes.  Deno standalone binaries end with
+/// the 8-byte trailer "d3n0l4nd".  Returns `true` when the trailer is
+/// present, `false` when it is definitively missing, and `true`
+/// (optimistic) on any I/O error so we never block a binary that might
+/// actually work.
+fn has_deno_standalone_trailer(path: &std::path::Path) -> bool {
+    use std::io::{Seek, SeekFrom};
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return true, // can't open → let caller handle existence
+    };
+    if file.seek(SeekFrom::End(-8)).is_err() {
+        return true; // file too small → let caller try it
+    }
+    let mut magic = [0u8; 8];
+    if file.read_exact(&mut magic).is_err() {
+        return true;
+    }
+    &magic == b"d3n0l4nd"
+}
+
 enum ServerBinary {
     /// A compiled native eventbox-server binary
     Native(PathBuf),
@@ -208,14 +230,16 @@ fn resource_dir_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     dirs
 }
 
-/// Resolves the best available server binary in priority order:
+/// Resolves all available server binary candidates in priority order:
 ///
-/// 1. Compiled eventbox-server binary next to app executable
-/// 2. Compiled eventbox-server binary in Tauri resource directories
-///    (includes .deb fallback paths on Linux)
+/// 1. Compiled eventbox-server binary next to app executable (validated)
+/// 2. Compiled eventbox-server binary in Tauri resource directories (validated)
 /// 3. Bundled sidecar Deno + resources/server.ts
 /// 4. System Deno (`deno` on PATH) + resources/server.ts
-fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String> {
+///
+/// Native binaries are validated for the Deno standalone trailer to skip
+/// corrupt or incompatible builds, allowing automatic fallback to Deno.
+fn resolve_server_binaries(app: &tauri::AppHandle) -> Vec<(ServerBinary, &'static str)> {
     let bin_name = if cfg!(target_os = "windows") {
         "eventbox-server.exe"
     } else {
@@ -225,6 +249,7 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
     // Compute resource directory candidates once to avoid duplicate logging.
     let resource_dirs = resource_dir_candidates(app);
 
+    let mut candidates: Vec<(ServerBinary, &'static str)> = Vec::new();
     let mut tried: Vec<String> = Vec::new();
 
     // 1. Compiled binary next to app executable
@@ -233,8 +258,15 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
         eprintln!("[EventBox] try exe-dir: {}", candidate.display());
         tried.push(candidate.display().to_string());
         if candidate.exists() {
-            eprintln!("[EventBox] found server binary (exe-dir)");
-            return Ok(ServerBinary::Native(candidate));
+            if has_deno_standalone_trailer(&candidate) {
+                eprintln!("[EventBox] found server binary (exe-dir)");
+                candidates.push((ServerBinary::Native(candidate), "bundled server"));
+            } else {
+                eprintln!(
+                    "[EventBox] binary at {} exists but is not a valid Deno standalone (missing trailer) \u{2014} skipping",
+                    candidate.display()
+                );
+            }
         }
     }
 
@@ -257,8 +289,15 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
             eprintln!("[EventBox] try resource: {}", display);
             tried.push(display);
             if candidate.exists() {
-                eprintln!("[EventBox] found server binary (resource)");
-                return Ok(ServerBinary::Native(candidate));
+                if has_deno_standalone_trailer(&candidate) {
+                    eprintln!("[EventBox] found server binary (resource)");
+                    candidates.push((ServerBinary::Native(candidate), "bundled server"));
+                } else {
+                    eprintln!(
+                        "[EventBox] binary at {} exists but is not a valid Deno standalone (missing trailer) \u{2014} skipping",
+                        candidate.display()
+                    );
+                }
             }
         }
     }
@@ -272,28 +311,28 @@ fn resolve_server_binary(app: &tauri::AppHandle) -> Result<ServerBinary, String>
     // 3. Bundled sidecar Deno
     let sidecar_deno = resolve_sidecar_deno_path();
     if let (Some(deno_path), Some(ts_path)) = (&sidecar_deno, &server_ts) {
-        return Ok(ServerBinary::SidecarDeno(
-            deno_path.clone(),
-            ts_path.clone(),
+        candidates.push((
+            ServerBinary::SidecarDeno(deno_path.clone(), ts_path.clone()),
+            "bundled Deno",
         ));
     }
 
     // 4. System Deno on PATH
     if let Some(ts_path) = &server_ts {
         if which_deno().is_some() {
-            return Ok(ServerBinary::SystemDeno(ts_path.clone()));
+            candidates.push((ServerBinary::SystemDeno(ts_path.clone()), "system Deno"));
         }
     }
 
-    let msg = format!(
-        "Could not find eventbox-server binary or Deno runtime.\n\
-         Paths tried:\n  {}\n\n\
-         The bundled server binary may be missing. Reinstall EventBox or \
-         install Deno manually: https://deno.land/#installation",
-        tried.join("\n  ")
-    );
-    eprintln!("[EventBox] {}", msg);
-    Err(msg)
+    if candidates.is_empty() {
+        eprintln!(
+            "[EventBox] No server binary or Deno runtime found.\n\
+             Paths tried:\n  {}",
+            tried.join("\n  ")
+        );
+    }
+
+    candidates
 }
 
 /// Find the sidecar Deno binary that Tauri bundles via `externalBin`.
@@ -423,16 +462,22 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
     let port = s.port;
     let event_id = s.event_id.clone();
 
-    let server_binary = resolve_server_binary(app).map_err(|e| {
+    let candidates = resolve_server_binaries(app);
+    if candidates.is_empty() {
+        let msg = "Could not find eventbox-server binary or Deno runtime.\n\n\
+                   The bundled server binary may be missing. Reinstall EventBox or \
+                   install Deno manually: https://deno.land/#installation"
+            .to_string();
+        eprintln!("[EventBox] {}", msg);
         let _ = app.emit(
             "server-status",
             serde_json::json!({
                 "running": false,
-                "error": &e,
+                "error": &msg,
             }),
         );
-        e
-    })?;
+        return Err(msg);
+    }
 
     let deno_args = |ts_path: &std::path::Path| -> Vec<String> {
         vec![
@@ -447,155 +492,198 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
         ]
     };
 
-    let (mut cmd, binary_label) = match &server_binary {
-        ServerBinary::Native(path) => {
-            let mut c = Command::new(path);
-            c.env("EVENTBOX_PORT", port.to_string())
-                .env("EVENTBOX_EVENT_ID", &event_id)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            (c, "bundled server")
-        }
-        ServerBinary::SidecarDeno(deno_path, ts_path) => {
-            let mut c = Command::new(deno_path);
-            c.args(deno_args(ts_path))
-                .env("EVENTBOX_PORT", port.to_string())
-                .env("EVENTBOX_EVENT_ID", &event_id)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            (c, "bundled Deno")
-        }
-        ServerBinary::SystemDeno(ts_path) => {
-            let mut c = Command::new("deno");
-            c.args(deno_args(ts_path))
-                .env("EVENTBOX_PORT", port.to_string())
-                .env("EVENTBOX_EVENT_ID", &event_id)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            (c, "system Deno")
-        }
-    };
+    let mut last_error = String::new();
 
-    match cmd.spawn() {
-        Ok(mut child) => {
-            // Read stdout in background to capture room code
-            if let Some(stdout) = child.stdout.take() {
-                let app_handle = app.clone();
-                std::thread::spawn(move || {
-                    let reader = BufReader::new(stdout);
-                    for line in reader.lines().map_while(Result::ok) {
-                        println!("[EventBox] {}", line);
-                        if line.contains("Room code:") {
-                            if let Some(code) = line.split("Room code:").nth(1) {
-                                let code = code.trim().to_string();
-                                {
-                                    let state_ref =
-                                        app_handle.state::<Mutex<ServerState>>();
-                                    let mut s = state_ref.lock().unwrap();
-                                    s.room_code = Some(code.clone());
-                                }
-                                let _ = app_handle.emit(
-                                    "server-status",
-                                    serde_json::json!({
-                                        "running": true,
-                                        "room_code": code,
-                                    }),
-                                );
-                            }
-                        }
-                    }
-                });
+    for (binary, label) in &candidates {
+        let mut cmd = match binary {
+            ServerBinary::Native(path) => {
+                let mut c = Command::new(path);
+                c.env("EVENTBOX_PORT", port.to_string())
+                    .env("EVENTBOX_EVENT_ID", &event_id)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                c
             }
+            ServerBinary::SidecarDeno(deno_path, ts_path) => {
+                let mut c = Command::new(deno_path);
+                c.args(deno_args(ts_path))
+                    .env("EVENTBOX_PORT", port.to_string())
+                    .env("EVENTBOX_EVENT_ID", &event_id)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                c
+            }
+            ServerBinary::SystemDeno(ts_path) => {
+                let mut c = Command::new("deno");
+                c.args(deno_args(ts_path))
+                    .env("EVENTBOX_PORT", port.to_string())
+                    .env("EVENTBOX_EVENT_ID", &event_id)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                c
+            }
+        };
 
-            // Read stderr for error reporting.
-            // Bump the generation counter and capture it so the
-            // thread can later tell whether this specific process
-            // instance is still the "current" one (guards against
-            // restart races where stop->start stores a new child
-            // before the old stderr thread runs its check).
-            s.generation += 1;
-            let spawn_generation = s.generation;
-            if let Some(stderr) = child.stderr.take() {
-                let app_handle2 = app.clone();
-                std::thread::spawn(move || {
-                    let reader = BufReader::new(stderr);
-                    let mut error_buf = String::new();
-                    for line in reader.lines().map_while(Result::ok) {
-                        eprintln!("[EventBox stderr] {}", line);
-                        error_buf.push_str(&line);
-                        error_buf.push('\n');
-                    }
-                    // Decide whether this exit was intentional / stale:
-                    //  - stop_server() calls child.take() -> child is None.
-                    //  - A restart bumps the generation counter, so
-                    //    spawn_generation != current generation.
-                    // In either case we should NOT emit an error.
-                    let suppress = {
-                        let state_ref =
-                            app_handle2.state::<Mutex<ServerState>>();
-                        let s = state_ref.lock().unwrap();
-                        s.child.is_none() || s.generation != spawn_generation
-                    };
+        match cmd.spawn() {
+            Ok(mut child) => {
+                // Give the process a moment to crash or stabilize.
+                // Corrupt/incompatible binaries exit instantly, so a short
+                // sleep is enough to detect them without slowing normal startup.
+                std::thread::sleep(std::time::Duration::from_millis(500));
 
-                    if !suppress {
-                        // Unexpected exit -- always emit an error so the
-                        // frontend is never left in a "Starting..." limbo.
-                        let error_msg = if error_buf.trim().is_empty() {
-                            "Server process exited unexpectedly with no output.\n\
-                             The bundled server binary may be missing or incompatible with your system."
-                                .to_string()
+                match child.try_wait() {
+                    Ok(Some(_exit_status)) => {
+                        // Process already exited — collect stderr for diagnostics
+                        let mut stderr_text = String::new();
+                        if let Some(mut pipe) = child.stderr.take() {
+                            let _ = pipe.read_to_string(&mut stderr_text);
+                        }
+                        let detail = if stderr_text.trim().is_empty() {
+                            format!("exited with {}", _exit_status)
                         } else {
-                            error_buf.trim().to_string()
+                            stderr_text.trim().to_string()
                         };
-                        let _ = app_handle2.emit(
+                        eprintln!(
+                            "[EventBox] {} crashed on startup: {} \u{2014} trying next fallback",
+                            label, detail
+                        );
+                        last_error = format!("{}: {}", label, detail);
+                        continue; // try next candidate
+                    }
+                    Ok(None) => {
+                        // Process is still running — success!
+                        eprintln!(
+                            "[EventBox] {} started successfully (pid={})",
+                            label,
+                            child.id()
+                        );
+
+                        // Read stdout in background to capture room code
+                        if let Some(stdout) = child.stdout.take() {
+                            let app_handle = app.clone();
+                            std::thread::spawn(move || {
+                                let reader = BufReader::new(stdout);
+                                for line in reader.lines().map_while(Result::ok) {
+                                    println!("[EventBox] {}", line);
+                                    if line.contains("Room code:") {
+                                        if let Some(code) = line.split("Room code:").nth(1) {
+                                            let code = code.trim().to_string();
+                                            {
+                                                let state_ref =
+                                                    app_handle.state::<Mutex<ServerState>>();
+                                                let mut s = state_ref.lock().unwrap();
+                                                s.room_code = Some(code.clone());
+                                            }
+                                            let _ = app_handle.emit(
+                                                "server-status",
+                                                serde_json::json!({
+                                                    "running": true,
+                                                    "room_code": code,
+                                                }),
+                                            );
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
+                        // Read stderr for error reporting.
+                        // Bump the generation counter and capture it so the
+                        // thread can later tell whether this specific process
+                        // instance is still the "current" one.
+                        s.generation += 1;
+                        let spawn_generation = s.generation;
+                        if let Some(stderr) = child.stderr.take() {
+                            let app_handle2 = app.clone();
+                            std::thread::spawn(move || {
+                                let reader = BufReader::new(stderr);
+                                let mut error_buf = String::new();
+                                for line in reader.lines().map_while(Result::ok) {
+                                    eprintln!("[EventBox stderr] {}", line);
+                                    error_buf.push_str(&line);
+                                    error_buf.push('\n');
+                                }
+                                let suppress = {
+                                    let state_ref =
+                                        app_handle2.state::<Mutex<ServerState>>();
+                                    let s = state_ref.lock().unwrap();
+                                    s.child.is_none() || s.generation != spawn_generation
+                                };
+
+                                if !suppress {
+                                    let error_msg = if error_buf.trim().is_empty() {
+                                        "Server process exited unexpectedly with no output.\n\
+                                         The bundled server binary may be missing or incompatible \
+                                         with your system."
+                                            .to_string()
+                                    } else {
+                                        error_buf.trim().to_string()
+                                    };
+                                    let _ = app_handle2.emit(
+                                        "server-status",
+                                        serde_json::json!({
+                                            "running": false,
+                                            "error": error_msg,
+                                        }),
+                                    );
+                                }
+                            });
+                        }
+
+                        s.child = Some(child);
+
+                        // Fix #7: Write PID file for orphan cleanup on next launch
+                        if let Some(ref child) = s.child {
+                            write_pidfile(child.id());
+                        }
+
+                        update_tray(app, true);
+
+                        let _ = app.emit(
                             "server-status",
                             serde_json::json!({
-                                "running": false,
-                                "error": error_msg,
+                                "running": true,
+                                "port": port,
+                                "event_id": event_id,
                             }),
                         );
+
+                        return Ok(());
                     }
-                });
+                    Err(e) => {
+                        eprintln!(
+                            "[EventBox] try_wait error for {}: {} \u{2014} trying next fallback",
+                            label, e
+                        );
+                        last_error = format!("{}: try_wait error: {}", label, e);
+                        continue;
+                    }
+                }
             }
-
-            s.child = Some(child);
-
-            // Fix #7: Write PID file for orphan cleanup on next launch
-            if let Some(ref child) = s.child {
-                write_pidfile(child.id());
+            Err(e) => {
+                eprintln!("[EventBox] failed to spawn {}: {}", label, e);
+                last_error = format!("Failed to start {}: {}", label, e);
+                continue;
             }
-
-            update_tray(app, true);
-
-            let _ = app.emit(
-                "server-status",
-                serde_json::json!({
-                    "running": true,
-                    "port": port,
-                    "event_id": event_id,
-                }),
-            );
-
-            Ok(())
-        }
-        Err(e) => {
-            let error_msg = format!(
-                "Failed to start {} server: {}\n\n\
-                 If this persists, reinstall EventBox or install Deno manually:\n\
-                 https://deno.land/#installation",
-                binary_label, e
-            );
-            eprintln!("Failed to start server: {}", e);
-            let _ = app.emit(
-                "server-status",
-                serde_json::json!({
-                    "running": false,
-                    "error": &error_msg,
-                }),
-            );
-            Err(error_msg)
         }
     }
+
+    // All candidates failed
+    let error_msg = format!(
+        "All server binary options failed.\nLast error: {}\n\n\
+         If this persists, reinstall EventBox or install Deno manually:\n\
+         https://deno.land/#installation",
+        last_error
+    );
+    eprintln!("[EventBox] {}", error_msg);
+    let _ = app.emit(
+        "server-status",
+        serde_json::json!({
+            "running": false,
+            "error": &error_msg,
+        }),
+    );
+    Err(error_msg)
 }
 
 fn stop_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) {
