@@ -62,13 +62,13 @@ fn is_eventbox_process(pid: u32) -> bool {
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .args(["-p", &pid.to_string(), "-o", "args="])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
         {
-            let comm = String::from_utf8_lossy(&output.stdout);
-            return comm.contains("eventbox-server") || comm.contains("deno") || comm.contains("server.ts");
+            let args = String::from_utf8_lossy(&output.stdout);
+            return args.contains("eventbox-server") || args.contains("server.ts");
         }
         return false;
     }
