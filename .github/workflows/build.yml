@@ -14,17 +14,14 @@ jobs:
         include:
           - platform: ubuntu-22.04
             rust-target: x86_64-unknown-linux-gnu
-            deno-target: x86_64-unknown-linux-gnu
             server-output: src-tauri/resources/eventbox-server
             tauri-rustup: stable
           - platform: windows-latest
             rust-target: x86_64-pc-windows-msvc
-            deno-target: x86_64-pc-windows-msvc
             server-output: src-tauri/resources/eventbox-server.exe
             tauri-rustup: stable
           - platform: macos-latest
             rust-target: aarch64-apple-darwin
-            deno-target: aarch64-apple-darwin
             server-output: src-tauri/resources/eventbox-server
             tauri-rustup: stable
 
@@ -44,7 +41,11 @@ jobs:
       - name: Install Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          # Pin to a specific version to prevent CI from silently picking up
+          # a broken release (e.g. Deno 2.6.0 shipped corrupt cross-compile
+          # denort binaries — denoland/deno#31556).  Bump deliberately after
+          # verifying `deno compile` still produces valid standalone binaries.
+          deno-version: "2.1.9"
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -58,20 +59,28 @@ jobs:
       - name: Compile EventBox server
         shell: bash
         run: |
+          # Do NOT use --target here.  Every CI runner already matches its
+          # build target (ubuntu=x86_64-linux, windows=x86_64-msvc,
+          # macos=aarch64-darwin).  Omitting --target makes Deno embed its
+          # OWN runtime instead of downloading a separate denort binary from
+          # GitHub Releases.  The download path was the root cause of
+          # "Could not find standalone binary section" — it introduced
+          # network failures, version-mismatch risks, and exposure to Deno
+          # release regressions (e.g. 2.6.0 shipped broken denort zips).
           deno compile --no-check \
             --allow-net --allow-read --allow-write --allow-env --allow-ffi \
             --unstable-ffi \
-            --target ${{ matrix.deno-target }} \
             --output ${{ matrix.server-output }} \
             src-tauri/resources/server.ts
 
-      - name: Verify compiled server binary
+      - name: Verify compiled server binary (pre-bundle)
         shell: bash
         run: |
+          # Validate the Deno standalone binary BEFORE Tauri bundles it.
           # Uses Python for cross-platform consistency (available on all
           # GitHub Actions runners: Linux, macOS, Windows).
           python3 -c "
-          import os, sys
+          import os, sys, hashlib
           path = sys.argv[1]
           if not os.path.isfile(path):
               print(f'ERROR: Server binary not found at {path}')
@@ -82,8 +91,8 @@ jobs:
               print(f'ERROR: Server binary is suspiciously small ({size} bytes)')
               sys.exit(1)
           with open(path, 'rb') as f:
-              f.seek(-8, 2)
-              trailer = f.read(8)
+              data = f.read()
+          trailer = data[-8:]
           # Deno standalone binaries end with the 8-byte trailer 'd3n0l4nd'.
           # If this is missing the binary will fail at runtime with
           # 'Could not find standalone binary section.'
@@ -91,8 +100,16 @@ jobs:
               print(f'ERROR: Binary missing Deno standalone trailer (d3n0l4nd)')
               print(f'  Got: {trailer!r}')
               sys.exit(1)
-          print(f'Binary validation passed (size={size}, trailer OK)')
+          digest = hashlib.sha256(data).hexdigest()
+          print(f'Binary validation passed (size={size}, sha256={digest}, trailer OK)')
           " "${{ matrix.server-output }}"
+          # Save a checksum so the post-bundle step can detect if the
+          # bundler (AppImage linuxdeploy, etc.) silently corrupted the file.
+          python3 -c "
+          import hashlib, sys
+          with open(sys.argv[1], 'rb') as f:
+              print(hashlib.sha256(f.read()).hexdigest())
+          " "${{ matrix.server-output }}" > /tmp/server-binary-sha256.txt
 
       - name: Build Tauri app
         run: cd src-tauri && cargo tauri build
@@ -100,6 +117,77 @@ jobs:
           RUSTUP_TOOLCHAIN: ${{ matrix.tauri-rustup }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          # Prevent the AppImage linuxdeploy tool from stripping bundled
+          # binaries.  `strip` removes data appended after the ELF proper,
+          # which destroys the Deno standalone trailer.  This only affects
+          # the Linux AppImage build; .deb, .msi, and .dmg are unaffected.
+          NO_STRIP: "true"
+
+      # After Tauri bundles the app, verify that the server binary inside
+      # the final artifacts was not silently corrupted by the bundler
+      # (e.g. linuxdeploy strip/patchelf on Linux AppImage).
+      - name: Verify server binary inside bundle (post-bundle)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          EXPECTED_SHA=$(cat /tmp/server-binary-sha256.txt)
+          echo "Expected SHA-256: $EXPECTED_SHA"
+
+          # --- Check .deb ---
+          DEB_FILE=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null | head -1)
+          if [ -n "$DEB_FILE" ]; then
+            TMPDIR=$(mktemp -d)
+            dpkg-deb -x "$DEB_FILE" "$TMPDIR"
+            BUNDLED=$(find "$TMPDIR" -name 'eventbox-server' -not -name '*.ts' | head -1)
+            if [ -n "$BUNDLED" ]; then
+              ACTUAL_SHA=$(python3 -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$BUNDLED")
+              echo ".deb server binary SHA-256: $ACTUAL_SHA"
+              if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+                echo "ERROR: .deb bundler corrupted eventbox-server (SHA mismatch)"
+                python3 -c "
+          import sys
+          with open(sys.argv[1],'rb') as f:
+              f.seek(-8,2); t=f.read(8)
+          print(f'  Trailer bytes: {t!r}')
+          print('  Deno trailer present' if t==b'd3n0l4nd' else '  Deno trailer MISSING')
+          " "$BUNDLED"
+                exit 1
+              fi
+              echo ".deb binary integrity OK"
+            else
+              echo "WARNING: eventbox-server not found inside .deb"
+            fi
+            rm -rf "$TMPDIR"
+          fi
+
+          # --- Check AppImage ---
+          APPIMAGE=$(ls src-tauri/target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)
+          if [ -n "$APPIMAGE" ]; then
+            chmod +x "$APPIMAGE"
+            TMPDIR=$(mktemp -d)
+            cd "$TMPDIR"
+            "$APPIMAGE" --appimage-extract > /dev/null 2>&1
+            BUNDLED=$(find squashfs-root -name 'eventbox-server' -not -name '*.ts' | head -1)
+            if [ -n "$BUNDLED" ]; then
+              ACTUAL_SHA=$(python3 -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$BUNDLED")
+              echo "AppImage server binary SHA-256: $ACTUAL_SHA"
+              if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+                echo "ERROR: AppImage bundler corrupted eventbox-server (SHA mismatch)"
+                python3 -c "
+          import sys
+          with open(sys.argv[1],'rb') as f:
+              f.seek(-8,2); t=f.read(8)
+          print(f'  Trailer bytes: {t!r}')
+          print('  Deno trailer present' if t==b'd3n0l4nd' else '  Deno trailer MISSING')
+          " "$BUNDLED"
+                exit 1
+              fi
+              echo "AppImage binary integrity OK"
+            else
+              echo "WARNING: eventbox-server not found inside AppImage"
+            fi
+            rm -rf "$TMPDIR"
+          fi
 
       - name: Rename artifacts to friendly names
         shell: bash
