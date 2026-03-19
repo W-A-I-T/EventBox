@@ -9,3 +9,15 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# SQLite runtime databases
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Lock files
+deno.lock
+package-lock.json
+
+# Tauri generated files
+src-tauri/gen/
