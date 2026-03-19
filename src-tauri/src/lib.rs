@@ -539,10 +539,24 @@ fn start_server(state: &Mutex<ServerState>, app: &tauri::AppHandle) -> Result<()
 
         match cmd.spawn() {
             Ok(mut child) => {
-                // Store the child in `pending_child` so that a concurrent
-                // `stop_server` can kill it during the stabilisation sleep.
+                // Re-check under the lock before storing: two concurrent
+                // start_server calls (e.g. tray "Start" + IPC invoke) can
+                // both pass the initial is_some() guard before either stores
+                // its child.  Without this re-check the second thread would
+                // silently overwrite pending_child, implicitly dropping the
+                // first Child — closing its file descriptors but NOT killing
+                // the process — leaving an orphan with no handle to stop it.
                 {
                     let mut s = state.lock().unwrap();
+                    if s.child.is_some() || s.pending_child.is_some() {
+                        eprintln!(
+                            "[EventBox] {} start lost race — killing redundant child",
+                            label
+                        );
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Ok(());
+                    }
                     s.pending_child = Some(child);
                     drop(s);
                 }

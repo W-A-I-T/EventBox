@@ -165,9 +165,9 @@ jobs:
           if [ -n "$APPIMAGE" ]; then
             chmod +x "$APPIMAGE"
             TMPDIR=$(mktemp -d)
-            TMPDIR=$(mktemp -d)
             APPIMAGE=$(realpath "$APPIMAGE")
             cd "$TMPDIR"
+            "$APPIMAGE" --appimage-extract > /dev/null 2>&1
             BUNDLED=$(find squashfs-root -name 'eventbox-server' -not -name '*.ts' | head -1)
             if [ -n "$BUNDLED" ]; then
               ACTUAL_SHA=$(python3 -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$BUNDLED")
