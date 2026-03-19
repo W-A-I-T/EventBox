@@ -1584,7 +1584,7 @@ function renderTemplate(html: string, vars: Record<string, string>): string {
 // ---------------------------------------------------------------------------
 // HTTP + WS server
 // ---------------------------------------------------------------------------
-Deno.serve({ port: PORT }, async (req) => {
+Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req) => {
 // SERVER_START is set at module init (line 50), no need to reset per-request
   const url = new URL(req.url);
 
@@ -2126,6 +2126,29 @@ Deno.serve({ port: PORT }, async (req) => {
     return json({ id, join_code: joinCode, join_url: joinUrl, role: body.role, staff_name: body.staff_name, expires_at: expiresAt });
   }
 
+  // POST /api/validate-code — Lightweight validation without session creation
+  if (url.pathname === "/api/validate-code" && req.method === "POST") {
+    const body = await req.json().catch(() => null);
+    if (!body?.code) return json({ error: "code required" }, 400);
+    const code = body.code.trim().toUpperCase();
+
+    // Check universal room code
+    if (code === ROOM_CODE) {
+      return json({ valid: true, type: "room_code", event_name: cachedEventName || EVENT_ID });
+    }
+
+    // Check per-staff join code
+    const rows = queryRows(
+      `SELECT id, role, staff_name, expires_at, revoked_at FROM staff_sessions WHERE join_code=?`,
+      [code],
+    );
+    if (rows.length === 0) return json({ valid: false, error: "Invalid code" }, 404);
+    const [, role, staffName, expiresAt, revokedAt] = rows[0];
+    if (revokedAt) return json({ valid: false, error: "Session revoked" }, 403);
+    if (Number(expiresAt) < Date.now()) return json({ valid: false, error: "Code expired" }, 403);
+    return json({ valid: true, type: "per_staff", role, staff_name: staffName, event_name: cachedEventName || EVENT_ID });
+  }
+
   // POST /api/staff-sessions/join — Volunteer claims a code (NO auth required)
   // Accepts EITHER a per-staff join_code OR the universal ROOM_CODE
   if (url.pathname === "/api/staff-sessions/join" && req.method === "POST") {
@@ -2137,11 +2160,13 @@ Deno.serve({ port: PORT }, async (req) => {
     const code = body.join_code.trim().toUpperCase();
     const incomingDeviceId = body.device_id || crypto.randomUUID();
 
-    // --- Universal room code join: create an ad-hoc staff session ---
+    // --- Universal room code join: require staff_name and role ---
     if (code === ROOM_CODE) {
-      const shortId = incomingDeviceId.slice(0, 4).toUpperCase();
-      const staffName = body.staff_name || `Staff-${shortId}`;
-      const role = body.role || "marshal";
+      if (!body.staff_name || !body.role) {
+        return json({ error: "staff_name and role required for room code join" }, 400);
+      }
+      const staffName = body.staff_name;
+      const role = body.role;
       const id = crypto.randomUUID();
       const joinCode = generateJoinCode();
       const now = Date.now();
