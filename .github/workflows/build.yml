@@ -92,16 +92,19 @@ jobs:
               sys.exit(1)
           with open(path, 'rb') as f:
               data = f.read()
-          trailer = data[-8:]
-          # Deno standalone binaries end with the 8-byte trailer 'd3n0l4nd'.
-          # If this is missing the binary will fail at runtime with
-          # 'Could not find standalone binary section.'
-          if trailer != b'd3n0l4nd':
-              print(f'ERROR: Binary missing Deno standalone trailer (d3n0l4nd)')
-              print(f'  Got: {trailer!r}')
+          # Deno standalone binaries contain the magic string 'd3n0l4nd'.
+          # In Deno 1.x it appeared at the last 8 bytes; in Deno 2.x on
+          # Linux/macOS the binary uses ELF/Mach-O sections so the ELF
+          # section header table occupies the end of file — the magic is
+          # still present but at a variable offset inside the file.
+          # On Windows (PE format) it still appears at the last 8 bytes.
+          # Scan anywhere in the file to handle all platforms/versions.
+          if b'd3n0l4nd' not in data:
+              print(f'ERROR: Binary missing Deno standalone magic (d3n0l4nd)')
+              print(f'  Last 8 bytes: {data[-8:]!r}')
               sys.exit(1)
           digest = hashlib.sha256(data).hexdigest()
-          print(f'Binary validation passed (size={size}, sha256={digest}, trailer OK)')
+          print(f'Binary validation passed (size={size}, sha256={digest}, magic OK)')
           " "${{ matrix.server-output }}"
           # Save a checksum so the post-bundle step can detect if the
           # bundler (AppImage linuxdeploy, etc.) silently corrupted the file.
@@ -146,10 +149,10 @@ jobs:
                 echo "ERROR: .deb bundler corrupted eventbox-server (SHA mismatch)"
                 python3 -c "
           import sys
-          with open(sys.argv[1],'rb') as f:
-              f.seek(-8,2); t=f.read(8)
-          print(f'  Trailer bytes: {t!r}')
-          print('  Deno trailer present' if t==b'd3n0l4nd' else '  Deno trailer MISSING')
+          data = open(sys.argv[1],'rb').read()
+          present = b'd3n0l4nd' in data
+          print(f'  Last 8 bytes: {data[-8:]!r}')
+          print('  Deno magic present' if present else '  Deno magic MISSING')
           " "$BUNDLED"
                 exit 1
               fi
@@ -176,10 +179,10 @@ jobs:
                 echo "ERROR: AppImage bundler corrupted eventbox-server (SHA mismatch)"
                 python3 -c "
           import sys
-          with open(sys.argv[1],'rb') as f:
-              f.seek(-8,2); t=f.read(8)
-          print(f'  Trailer bytes: {t!r}')
-          print('  Deno trailer present' if t==b'd3n0l4nd' else '  Deno trailer MISSING')
+          data = open(sys.argv[1],'rb').read()
+          present = b'd3n0l4nd' in data
+          print(f'  Last 8 bytes: {data[-8:]!r}')
+          print('  Deno magic present' if present else '  Deno magic MISSING')
           " "$BUNDLED"
                 exit 1
               fi
