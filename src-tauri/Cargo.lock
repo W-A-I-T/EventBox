@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "eventbox-desktop"
-version = "0.3.33"
+version = "0.3.34"
 dependencies = [
  "libc",
  "local-ip-address",
