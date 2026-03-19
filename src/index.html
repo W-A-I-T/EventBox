@@ -324,9 +324,9 @@
     let denoAvailable = null; // null = unknown, true/false after check
 
     // ---- Tauri event listeners ----
-    const isTauri = window.__TAURI__ !== undefined;
+    const inTauriApp = !!(window.__TAURI__);
 
-    if (isTauri) {
+    if (inTauriApp) {
       const { listen } = window.__TAURI__.event;
       const { invoke } = window.__TAURI__.core;
 
@@ -393,47 +393,50 @@
 
     // ---- Actions ----
     function handleStart() {
-      const input = document.getElementById('event-id-input');
-      const id = input.value.trim();
-      if (!id) {
-        showError('Please enter an Event ID');
-        return;
-      }
-      dismissError();
-      roomCode = '';
-      eventId = id;
-      if (isTauri) {
-        const { invoke } = window.__TAURI__.core;
-        starting = true;
-        updateUI();
-        // Set the safety-net timeout BEFORE invoking so it cannot be
-        // bypassed by a fast server-status event that arrives before
-        // the .then() callback runs.
-        if (startTimeout) clearTimeout(startTimeout);
-        startTimeout = setTimeout(() => {
-          if (starting && !roomCode) {
-            starting = false;
-            serverRunning = false;
-            showError('Server did not respond in time. The bundled server binary may be missing or crashed.\nCheck the app logs for details.');
-            updateUI();
-          }
-        }, 15000);
-        invoke('set_event_id_and_start', { eventId: id })
-          .catch((err) => {
-            starting = false;
-            if (startTimeout) { clearTimeout(startTimeout); startTimeout = null; }
-            showError(String(err));
-            updateUI();
-          });
-      } else {
-        showError('This UI requires the EventBox desktop app.');
+      try {
+        const input = document.getElementById('event-id-input');
+        const id = input.value.trim();
+        if (!id) {
+          showError('Please enter an Event ID');
+          return;
+        }
+        dismissError();
+        roomCode = '';
+        eventId = id;
+        if (inTauriApp) {
+          // Update UI first so the button always gives feedback
+          starting = true;
+          updateUI();
+          // Set the safety-net timeout BEFORE invoking so it cannot be
+          // bypassed by a fast server-status event that arrives before
+          // the .then() callback runs.
+          if (startTimeout) clearTimeout(startTimeout);
+          startTimeout = setTimeout(() => {
+            if (starting && !roomCode) {
+              starting = false;
+              serverRunning = false;
+              showError('Server did not respond in time. The bundled server binary may be missing or crashed.\nCheck the app logs for details.');
+              updateUI();
+            }
+          }, 15000);
+          window.__TAURI__.core.invoke('set_event_id_and_start', { eventId: id })
+            .catch((err) => {
+              starting = false;
+              if (startTimeout) { clearTimeout(startTimeout); startTimeout = null; }
+              showError(String(err));
+              updateUI();
+            });
+        } else {
+          showError('This UI requires the EventBox desktop app.');
+        }
+      } catch (e) {
+        showError('Unexpected error: ' + String(e));
       }
     }
 
     function handleStop() {
-      if (isTauri) {
-        const { invoke } = window.__TAURI__.core;
-        invoke('stop_server_cmd').catch(() => {});
+      if (inTauriApp) {
+        window.__TAURI__.core.invoke('stop_server_cmd').catch(() => {});
       }
       serverRunning = false;
       updateUI();
