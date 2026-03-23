@@ -189,7 +189,33 @@ CREATE TABLE IF NOT EXISTS now_playing (
   division_name  TEXT,
   dance_code     TEXT,
   status         TEXT,
+  song_note      TEXT,
   updated_at_ms  INTEGER NOT NULL
+);
+
+-- Walk-up sales (offline door sales)
+CREATE TABLE IF NOT EXISTS walkup_orders (
+  order_id       TEXT PRIMARY KEY,
+  event_id       TEXT NOT NULL,
+  items_json     TEXT NOT NULL,
+  total_cents    INTEGER NOT NULL,
+  currency       TEXT DEFAULT 'USD',
+  payment_method TEXT NOT NULL,
+  buyer_name     TEXT,
+  buyer_email    TEXT,
+  operator_device TEXT,
+  created_at_ms  INTEGER NOT NULL,
+  synced_at      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS walkup_credentials (
+  credential_id  TEXT PRIMARY KEY,
+  order_id       TEXT NOT NULL,
+  event_id       TEXT NOT NULL,
+  product_name   TEXT,
+  buyer_name     TEXT,
+  qr_payload     TEXT NOT NULL,
+  created_at_ms  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS published_results (
@@ -389,7 +415,7 @@ async function authenticate(req: Request): Promise<TokenClaims | null> {
 // Role-based op permissions (Fix #1: server-side authorization)
 // ---------------------------------------------------------------------------
 const ROLE_OP_PERMISSIONS: Record<string, string[]> = {
-  scanner: ["checkin", "payment_confirmed"],
+  scanner: ["checkin", "payment_confirmed", "walkup_sale"],
   judge: ["score", "score_submission"],
   marshal: ["marshal", "scratch", "heat_state"],
   deck_captain: ["marshal", "heat_state"],
@@ -401,7 +427,7 @@ const ROLE_OP_PERMISSIONS: Record<string, string[]> = {
   videographer: [],
   event_admin: [
     "checkin", "score", "score_submission", "marshal", "heat_state",
-    "scratch", "nowplaying", "result_publish", "chairman_override", "payment_confirmed",
+    "scratch", "nowplaying", "result_publish", "chairman_override", "payment_confirmed", "walkup_sale",
   ],
 };
 
@@ -636,13 +662,13 @@ function applyOp(op: Op): ApplyResult {
 
     case "nowplaying": {
       queryRun(
-        `INSERT INTO now_playing(event_id,heat_id,heat_number,division_name,dance_code,status,updated_at_ms)
-         VALUES (?,?,?,?,?,?,?)
+        `INSERT INTO now_playing(event_id,heat_id,heat_number,division_name,dance_code,status,song_note,updated_at_ms)
+         VALUES (?,?,?,?,?,?,?,?)
          ON CONFLICT(event_id) DO UPDATE SET
            heat_id=excluded.heat_id, heat_number=excluded.heat_number,
            division_name=excluded.division_name, dance_code=excluded.dance_code,
-           status=excluded.status, updated_at_ms=excluded.updated_at_ms`,
-        [op.event_id, p.heat_id ?? null, p.heat_number ?? null, p.division_name ?? null, p.dance_code ?? null, p.status ?? "playing", now],
+           status=excluded.status, song_note=excluded.song_note, updated_at_ms=excluded.updated_at_ms`,
+        [op.event_id, p.heat_id ?? null, p.heat_number ?? null, p.division_name ?? null, p.dance_code ?? null, p.status ?? "playing", p.song_note ?? null, now],
       );
       break;
     }
@@ -703,6 +729,46 @@ function applyOp(op: Op): ApplyResult {
             now,
           ],
         );
+      }
+      break;
+    }
+
+    case "walkup_sale": {
+      if (p?.items && Array.isArray(p.items) && p?.payment_method) {
+        const orderId = crypto.randomUUID();
+        const totalCents = (p.total_amount_cents as number) || 0;
+        queryRun(
+          `INSERT INTO walkup_orders(order_id,event_id,items_json,total_cents,currency,payment_method,buyer_name,buyer_email,operator_device,created_at_ms)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          [orderId, op.event_id, JSON.stringify(p.items), totalCents, (p.currency as string) || "USD", p.payment_method, p.buyer_name ?? null, p.buyer_email ?? null, op.actor_device_id ?? null, now],
+        );
+
+        // Generate credentials for each item
+        const credentials: Array<{ credential_id: string; qr_payload: string; product_name: string }> = [];
+        for (const item of p.items as Array<{ product_id: string; product_name: string; qty: number; unit_amount_cents: number }>) {
+          for (let i = 0; i < item.qty; i++) {
+            const credId = crypto.randomUUID();
+            const qrPayload = `eb:${credId}:${op.event_id.slice(0, 8)}`;
+            queryRun(
+              `INSERT INTO walkup_credentials(credential_id,order_id,event_id,product_name,buyer_name,qr_payload,created_at_ms)
+               VALUES (?,?,?,?,?,?,?)`,
+              [credId, orderId, op.event_id, item.product_name, (p.buyer_name as string) ?? null, qrPayload, now],
+            );
+            credentials.push({ credential_id: credId, qr_payload: qrPayload, product_name: item.product_name });
+
+            // Also create a checkin entry so scanner can find them
+            queryRun(
+              `INSERT INTO checkins(event_id,credential_id,status,device_id,updated_at_ms)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(event_id,credential_id) DO NOTHING`,
+              [op.event_id, credId, "issued", op.actor_device_id ?? null, now],
+            );
+          }
+        }
+
+        // Store credentials on the op payload for response
+        (op.payload as Record<string, unknown>)._generated_order_id = orderId;
+        (op.payload as Record<string, unknown>)._generated_credentials = credentials;
       }
       break;
     }
@@ -1869,17 +1935,47 @@ Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req) => {
 
       case "nowplaying": {
         const rows = queryRows(
-          `SELECT heat_id, heat_number, division_name, dance_code, status, updated_at_ms FROM now_playing WHERE event_id=?`,
+          `SELECT heat_id, heat_number, division_name, dance_code, status, song_note, updated_at_ms FROM now_playing WHERE event_id=?`,
           [EVENT_ID],
         );
         const np = rows.length > 0
           ? {
             heat_id: rows[0][0], heat_number: rows[0][1],
             division_name: rows[0][2], dance_code: rows[0][3],
-            status: rows[0][4], updated_at_ms: rows[0][5],
+            status: rows[0][4], song_note: rows[0][5] || null, updated_at_ms: rows[0][6],
           }
           : null;
         return json({ event_id: EVENT_ID, now_playing: np });
+      }
+
+      case "orders": {
+        const rows = queryRows(
+          `SELECT order_id, items_json, total_cents, currency, payment_method, buyer_name, buyer_email, created_at_ms FROM walkup_orders WHERE event_id=? ORDER BY created_at_ms DESC LIMIT 100`,
+          [EVENT_ID],
+        ).map(([order_id, items_json, total_cents, currency, payment_method, buyer_name, buyer_email, created_at_ms]) => ({
+          order_id, items: JSON.parse(String(items_json)), total_cents, currency, payment_method, buyer_name, buyer_email, created_at_ms,
+        }));
+        return json({ event_id: EVENT_ID, orders: rows });
+      }
+
+      case "credentials": {
+        const search = url.searchParams.get("search") || "";
+        let rows;
+        if (search) {
+          rows = queryRows(
+            `SELECT credential_id, order_id, product_name, buyer_name, qr_payload, created_at_ms FROM walkup_credentials WHERE event_id=? AND (buyer_name LIKE ? OR credential_id LIKE ?) ORDER BY created_at_ms DESC LIMIT 50`,
+            [EVENT_ID, `%${search}%`, `%${search}%`],
+          );
+        } else {
+          rows = queryRows(
+            `SELECT credential_id, order_id, product_name, buyer_name, qr_payload, created_at_ms FROM walkup_credentials WHERE event_id=? ORDER BY created_at_ms DESC LIMIT 50`,
+            [EVENT_ID],
+          );
+        }
+        const creds = rows.map(([credential_id, order_id, product_name, buyer_name, qr_payload, created_at_ms]) => ({
+          credential_id, order_id, product_name, buyer_name, qr_payload, created_at_ms,
+        }));
+        return json({ event_id: EVENT_ID, credentials: creds });
       }
 
       case "results": {
@@ -2612,6 +2708,7 @@ async function doScratch(entryId,heatId){
 let nowPlaying=null;
 let heatsData=[];
 let heatStatuses={};
+let currentSongNote='';
 
 async function loadData(){
   try{
@@ -2637,10 +2734,13 @@ async function loadData(){
 function render(){
   let html='';
   if(nowPlaying){
-    html+='<div class="heat-header" style="border-color:#6366f1"><div class="heat-title">🎵 Now: Heat '+(nowPlaying.heat_number||'—')+' <span class="heat-status on_floor">'+(nowPlaying.status||'playing')+'</span></div><div class="heat-sub">'+(nowPlaying.division_name||'')+' — '+(nowPlaying.dance_code||'')+'</div><button class="btn" style="background:#dc2626;color:#fff;margin-top:.5rem;padding:.35rem .7rem;font-size:.75rem" onclick="clearNowPlaying()">⏹ Clear Now Playing</button></div>';
+    const songInfo=nowPlaying.song_note?'<div style="color:#a78bfa;font-size:.8rem;margin-top:.25rem">🎶 '+esc(nowPlaying.song_note)+'</div>':'';
+    html+='<div class="heat-header" style="border-color:#6366f1"><div class="heat-title">🎵 Now: Heat '+(nowPlaying.heat_number||'—')+' <span class="heat-status on_floor">'+(nowPlaying.status||'playing')+'</span></div><div class="heat-sub">'+(nowPlaying.division_name||'')+' — '+(nowPlaying.dance_code||'')+'</div>'+songInfo+'<button class="btn" style="background:#dc2626;color:#fff;margin-top:.5rem;padding:.35rem .7rem;font-size:.75rem" onclick="clearNowPlaying()">⏹ Clear Now Playing</button></div>';
   }else{
     html+='<div class="heat-header"><div class="heat-title" style="color:#94a3b8">No heat currently playing</div></div>';
   }
+  // Song note input
+  html+='<div style="margin:.75rem 0"><input id="song-note-input" type="text" placeholder="Song/music (optional)" style="width:100%;padding:.5rem;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:.8rem;outline:none" value="'+esc(currentSongNote)+'"></div>';
   html+='<h3 style="font-size:.85rem;color:#94a3b8;margin:1rem 0 .5rem">Schedule</h3>';
   const upcoming=heatsData.filter(h=>{const s=heatStatuses[h.id];return !s||s==='scheduled'||s==='in_hole'||s==='on_deck'||s==='on_floor'});
   if(upcoming.length===0){
@@ -2658,13 +2758,17 @@ function render(){
     html+='</div>';
   });
   document.getElementById('portal-root').innerHTML=html;
+  // Re-attach input listener
+  const inp=document.getElementById('song-note-input');
+  if(inp)inp.addEventListener('input',function(e){currentSongNote=e.target.value;});
 }
 
 async function setNowPlaying(heatId,heatNum,divName){
-  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'nowplaying',created_at_ms:Date.now(),payload:{heat_id:heatId,heat_number:heatNum,division_name:divName,status:'playing'}};
+  const songNote=(document.getElementById('song-note-input')||{}).value||'';
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'nowplaying',created_at_ms:Date.now(),payload:{heat_id:heatId,heat_number:heatNum,division_name:divName,status:'playing',song_note:songNote||undefined}};
   await submitOp(op);
-  nowPlaying={heat_id:heatId,heat_number:heatNum,division_name:divName,status:'playing'};
-  portalToast('Now playing: Heat '+heatNum);
+  nowPlaying={heat_id:heatId,heat_number:heatNum,division_name:divName,status:'playing',song_note:songNote||null};
+  portalToast('Now playing: Heat '+heatNum+(songNote?' — '+songNote:''));
   render();
 }
 
@@ -2672,6 +2776,7 @@ async function clearNowPlaying(){
   const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'nowplaying',created_at_ms:Date.now(),payload:{heat_id:null,status:'between_heats'}};
   await submitOp(op);
   nowPlaying=null;
+  currentSongNote='';
   portalToast('Now playing cleared');
   render();
 }
@@ -3082,7 +3187,8 @@ async function loadData(){
 function render(){
   let html='<h3 style="font-size:.9rem;color:#fff;margin-bottom:.75rem">🎬 Videographer View</h3>';
   if(nowPlaying){
-    html+='<div class="heat-header" style="border-color:#6366f1"><div class="heat-title">🎵 Now Filming: Heat '+(nowPlaying.heat_number||'—')+' <span class="heat-status on_floor">'+(nowPlaying.status||'playing')+'</span></div><div class="heat-sub">'+(nowPlaying.division_name||'')+' — '+(nowPlaying.dance_code||'')+'</div></div>';
+    const songInfo=nowPlaying.song_note?'<div style="color:#a78bfa;font-size:.8rem;margin-top:.25rem">🎶 '+esc(nowPlaying.song_note)+'</div>':'';
+    html+='<div class="heat-header" style="border-color:#6366f1"><div class="heat-title">🎵 Now Filming: Heat '+(nowPlaying.heat_number||'—')+' <span class="heat-status on_floor">'+(nowPlaying.status||'playing')+'</span></div><div class="heat-sub">'+(nowPlaying.division_name||'')+' — '+(nowPlaying.dance_code||'')+'</div>'+songInfo+'</div>';
   }else{
     html+='<div class="heat-header"><div class="heat-title" style="color:#94a3b8">No heat currently on floor</div></div>';
   }
