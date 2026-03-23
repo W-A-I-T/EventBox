@@ -1,6 +1,6 @@
 {
   "name": "eventbox-desktop",
-  "version": "0.3.39",
+  "version": "0.3.40",
   "description": "EventBox — LAN Authority Server desktop app for dance competitions",
   "private": true,
   "scripts": {
