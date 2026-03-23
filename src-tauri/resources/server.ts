@@ -24,6 +24,7 @@ import { Database } from "jsr:@db/sqlite@0.12";
 // Config
 // ---------------------------------------------------------------------------
 const PORT = Number(Deno.env.get("EVENTBOX_PORT") ?? 8787);
+const BEACON_PORT = Number(Deno.env.get("EVENTBOX_BEACON_PORT") ?? 41234);
 const DB_PATH = Deno.env.get("EVENTBOX_DB") ?? "./eventbox.sqlite";
 // Room code: env override > SQLite persisted > random
 const _ROOM_CODE_ENV = Deno.env.get("EVENTBOX_ROOM_CODE");
@@ -31,7 +32,10 @@ let ROOM_CODE = _ROOM_CODE_ENV ?? String(Math.floor(100000 + Math.random() * 900
 let ADMIN_SECRET =
   Deno.env.get("EVENTBOX_ADMIN_SECRET") ??
   ROOM_CODE;
-const EVENT_ID = Deno.env.get("EVENTBOX_EVENT_ID") ?? "";
+// Multi-event: accept comma-separated list of event IDs, default to single
+const EVENT_IDS_RAW = Deno.env.get("EVENTBOX_EVENT_ID") ?? "";
+const EVENT_IDS = EVENT_IDS_RAW.split(",").map((s) => s.trim()).filter(Boolean);
+const EVENT_ID = EVENT_IDS[0] ?? "";
 const CHASSEFLOW_API = Deno.env.get("EVENTBOX_CHASSEFLOW_API") ?? "https://dance-flow-control.lovable.app";
 const SECRET =
   Deno.env.get("EVENTBOX_SECRET") ??
@@ -49,17 +53,43 @@ function escapeHtml(s: string): string {
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 let SERVER_START = Date.now(); // Updated after Deno.serve() binds
 
-// Module-level cached event name (updated on sync)
+// Module-level cached event names (updated on sync)
+const cachedEventNames: Record<string, string> = {};
 let cachedEventName = "";
-function refreshCachedEventName() {
+function refreshCachedEventName(eventId?: string) {
+  const eid = eventId || EVENT_ID;
   try {
-    const rows = queryRows(`SELECT data_json FROM ref_data WHERE event_id=? AND table_name='event'`, [EVENT_ID]);
+    const rows = queryRows(`SELECT data_json FROM ref_data WHERE event_id=? AND table_name='event'`, [eid]);
     if (rows.length > 0) {
       const parsed = JSON.parse(String(rows[0][0]));
-      if (Array.isArray(parsed) && parsed[0]?.name) cachedEventName = parsed[0].name;
-      else if (parsed?.name) cachedEventName = parsed.name;
+      const name = Array.isArray(parsed) && parsed[0]?.name ? parsed[0].name : parsed?.name || "";
+      cachedEventNames[eid] = name;
+      if (eid === EVENT_ID) cachedEventName = name;
     }
   } catch {}
+}
+
+/**
+ * Extract event_id from request (query param, body, or default).
+ */
+function resolveEventId(url: URL, body?: Record<string, unknown>): string {
+  return url.searchParams.get("event_id") || (body?.event_id as string) || EVENT_ID;
+}
+
+/**
+ * Get all known event IDs (configured + any that have received ops).
+ */
+function getKnownEventIds(): string[] {
+  const ids = new Set(EVENT_IDS);
+  try {
+    const rows = queryRows(`SELECT DISTINCT event_id FROM ops`, []);
+    for (const r of rows) ids.add(String(r[0]));
+  } catch {}
+  try {
+    const rows = queryRows(`SELECT DISTINCT event_id FROM ref_data`, []);
+    for (const r of rows) ids.add(String(r[0]));
+  } catch {}
+  return [...ids].filter(Boolean);
 }
 
 if (!EVENT_ID) {
@@ -1644,8 +1674,22 @@ Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req) => {
       ok: true,
       time: Date.now(),
       event_id: EVENT_ID,
+      event_ids: getKnownEventIds(),
+      multi_event: EVENT_IDS.length > 1 || getKnownEventIds().length > 1,
       version: "0.4.0",
     });
+  }
+
+  // ---- List all events (unauthenticated) ----
+  if (url.pathname === "/api/events" && req.method === "GET") {
+    const eventIds = getKnownEventIds();
+    const events = eventIds.map((eid) => {
+      const name = cachedEventNames[eid] || eid.slice(0, 8) + "…";
+      const opCount = queryRows(`SELECT COUNT(*) FROM ops WHERE event_id=?`, [eid])[0]?.[0] ?? 0;
+      const heatCount = queryRows(`SELECT COUNT(*) FROM heat_status WHERE event_id=?`, [eid])[0]?.[0] ?? 0;
+      return { event_id: eid, name, ops: opCount, heats: heatCount };
+    });
+    return json({ events });
   }
 
   // ---- Auth: issue token via room code (Fix D: rate-limited) ----
@@ -3042,8 +3086,39 @@ a.cloud{background:#334155;color:#e2e8f0}a.cloud:hover{background:#475569}
 });
 
 console.log(`\n🎯 EventBox v0.4 running on port ${PORT}`);
-console.log(`   Event:     ${EVENT_ID}`);
+console.log(`   Event:     ${EVENT_ID}${EVENT_IDS.length > 1 ? ` (+${EVENT_IDS.length - 1} more)` : ""}`);
 console.log(`   Room code: ${ROOM_CODE}`);
 console.log(`   Database:  ${DB_PATH}`);
 console.log(`   Admin key: ${ADMIN_SECRET === ROOM_CODE ? "(same as room code)" : "(custom EVENTBOX_ADMIN_SECRET)"}`);
-console.log(`   Auth:      HMAC-SHA256 tokens (${TOKEN_TTL_MS / 3600000}h TTL)\n`);
+console.log(`   Auth:      HMAC-SHA256 tokens (${TOKEN_TTL_MS / 3600000}h TTL)`);
+
+// ---------------------------------------------------------------------------
+// UDP Broadcast Beacon — LAN auto-discovery
+// ---------------------------------------------------------------------------
+// Broadcasts a JSON beacon every 10 seconds on port 41234 so PWA clients
+// on the same subnet can discover this server without QR codes or manual entry.
+try {
+  const beaconSocket = Deno.listenDatagram({ port: BEACON_PORT, transport: "udp" });
+  const beaconPayload = new TextEncoder().encode(JSON.stringify({
+    service: "eventbox",
+    event_id: EVENT_ID,
+    event_ids: EVENT_IDS,
+    port: PORT,
+    version: "0.4.0",
+  }));
+  const broadcastAddr: Deno.NetAddr = { transport: "udp", hostname: "255.255.255.255", port: BEACON_PORT };
+
+  setInterval(async () => {
+    try {
+      await beaconSocket.send(beaconPayload, broadcastAddr);
+    } catch {
+      // Broadcast may fail on some networks — that's fine
+    }
+  }, 10_000);
+
+  console.log(`   Beacon:    UDP broadcast on port ${BEACON_PORT} (every 10s)`);
+} catch {
+  console.log(`   Beacon:    UDP broadcast unavailable (port ${BEACON_PORT} in use or not supported)`);
+}
+
+console.log("");
