@@ -1644,7 +1644,6 @@ Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req) => {
       ok: true,
       time: Date.now(),
       event_id: EVENT_ID,
-      room_code: ROOM_CODE,
       version: "0.4.0",
     });
   }
@@ -1911,6 +1910,45 @@ Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req) => {
       queryRun(`UPDATE ops SET synced_at=? WHERE op_id=?`, [now, String(id)]);
     }
     return json({ ok: true, marked: body.op_ids.length });
+  }
+
+  // ---- Export all event data as JSON (for backup / data portability) ----
+  if (url.pathname === "/api/export-data" && req.method === "GET") {
+    const claims = await authenticate(req);
+    if (!claims) return json({ error: "unauthorized" }, 401);
+
+    const tables: Record<string, unknown[]> = {};
+    const tableNames = ["ops", "checkins", "marshal_status", "heat_status", "judge_marks", "judge_submissions", "scratches", "now_playing", "published_results", "payments", "ref_data", "staff_sessions"];
+    for (const name of tableNames) {
+      try {
+        const rows = queryRows(`SELECT * FROM ${name} WHERE event_id=?`, [EVENT_ID]);
+        // Get column names from pragma
+        const colRows = queryRows(`PRAGMA table_info(${name})`, []);
+        const cols = colRows.map((r) => String(r[1]));
+        tables[name] = rows.map((row) => {
+          const obj: Record<string, unknown> = {};
+          cols.forEach((col, i) => { obj[col] = row[i]; });
+          return obj;
+        });
+      } catch {
+        tables[name] = [];
+      }
+    }
+
+    const exportData = {
+      event_id: EVENT_ID,
+      exported_at: new Date().toISOString(),
+      version: "0.4.0",
+      tables,
+    };
+
+    return new Response(JSON.stringify(exportData, null, 2), {
+      headers: {
+        "content-type": "application/json",
+        "content-disposition": `attachment; filename="eventbox-backup-${EVENT_ID.slice(0, 8)}.json"`,
+        "access-control-allow-origin": "*",
+      },
+    });
   }
 
   // ---- Fix #4: POST /api/sync-ref — Accept reference data for local portals ----
@@ -2543,6 +2581,152 @@ function render(){
     html+='<div class="list-item"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat '+h.id.slice(0,6))+'</div><div class="detail"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span></div></div></div>';
   });
   document.getElementById('portal-root').innerHTML=html;
+}
+`;
+    } else if (role === "judge") {
+      roleScript = `
+let heatsData=[];
+let heatStatuses={};
+let divisions={};
+let currentHeatId=null;
+let currentDanceIdx=0;
+let marks={};
+let submissions={};
+
+async function loadData(){
+  try{
+    const [hsRes]=await Promise.all([api('/state/heats')]);
+    heatStatuses={};
+    (hsRes.heats||[]).forEach(h=>heatStatuses[h.heat_id]=h.status);
+    const heatRef=await fetch(BASE+'/state/ref?table=heats',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
+    if(heatRef?.data){
+      heatsData=typeof heatRef.data==='string'?JSON.parse(heatRef.data):heatRef.data;
+    }else{
+      heatsData=Object.keys(heatStatuses).map(id=>({id,heat_number:null,division_name:null,dances:[]}));
+    }
+    const divRef=await fetch(BASE+'/state/ref?table=divisions',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
+    if(divRef?.data){
+      const divArr=typeof divRef.data==='string'?JSON.parse(divRef.data):divRef.data;
+      divArr.forEach(d=>{divisions[d.id]=d});
+    }
+    // Load existing marks
+    try{
+      const mRes=await api('/state/judge-marks');
+      (mRes.marks||[]).forEach(m=>{marks[m.heat_id+'_'+m.dance_code+'_'+m.heat_entry_id]=m});
+    }catch{}
+    try{
+      const sRes=await api('/state/judge-submissions');
+      (sRes.submissions||[]).forEach(s=>{submissions[s.heat_id+'_'+s.dance_code]=s});
+    }catch{}
+    render();
+  }catch(e){
+    document.getElementById('portal-root').innerHTML='<div class="empty">⚠ Could not load data: '+esc(e.message)+'<br><button class="btn btn-floor" style="margin-top:1rem" onclick="loadData()">Retry</button></div>';
+  }
+}
+
+function render(){
+  if(currentHeatId){renderScoring();return}
+  const active=heatsData.filter(h=>{const s=heatStatuses[h.id];return s==='on_floor'||s==='on_deck'});
+  const scheduled=heatsData.filter(h=>{const s=heatStatuses[h.id];return !s||s==='scheduled'||s==='in_hole'});
+  const completed=heatsData.filter(h=>{const s=heatStatuses[h.id];return s==='completed'});
+  let html='<h3 style="font-size:.9rem;color:#fff;margin-bottom:.75rem">🎯 Heats to Score</h3>';
+  if(active.length===0&&scheduled.length===0){
+    html+='<div class="empty"><p>No heats available for scoring yet.</p><p style="color:#4ade80;font-size:.75rem;margin-top:.5rem">✓ Connected — heats will appear when marshalled.</p></div>';
+  }
+  [...active,...scheduled].forEach(h=>{
+    const status=heatStatuses[h.id]||'scheduled';
+    const isOnFloor=status==='on_floor';
+    html+='<div class="list-item" style="cursor:pointer;'+(isOnFloor?'border-color:#6366f1':'')+'" onclick="openHeat(\\''+h.id+'\\')"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat')+'</div><div class="detail"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span></div></div><span style="color:#6366f1;font-size:.8rem">Score →</span></div>';
+  });
+  if(completed.length>0){
+    html+='<h3 style="font-size:.85rem;color:#94a3b8;margin:1rem 0 .5rem">Completed ('+completed.length+')</h3>';
+    completed.slice(0,10).forEach(h=>{
+      html+='<div class="list-item" style="opacity:.5"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat')+'</div><div class="detail"><span class="heat-status completed">completed</span></div></div></div>';
+    });
+  }
+  document.getElementById('portal-root').innerHTML=html;
+}
+
+function openHeat(heatId){
+  currentHeatId=heatId;
+  currentDanceIdx=0;
+  renderScoring();
+}
+
+function renderScoring(){
+  const heat=heatsData.find(h=>h.id===currentHeatId);
+  if(!heat){currentHeatId=null;render();return}
+  const div=heat.division_id?divisions[heat.division_id]:null;
+  const dances=(heat.dances&&heat.dances.length>0)?heat.dances:(div&&div.dances?div.dances:[{dance_code:'dance',dance_name:'Dance'}]);
+  const dance=dances[currentDanceIdx]||dances[0]||{dance_code:'dance',dance_name:'Dance'};
+  const scoringMode=div?div.scoring_mode:'callback';
+  const entries=heat.entries||[];
+
+  let html='<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:1rem"><button class="btn" style="background:#334155;color:#e2e8f0;padding:.4rem .7rem" onclick="currentHeatId=null;render()">← Back</button><div><div style="font-size:1rem;font-weight:700;color:#fff">Heat '+(heat.heat_number||'—')+'</div><div style="font-size:.75rem;color:#94a3b8">'+(heat.division_name||'')+'</div></div></div>';
+
+  // Dance tabs
+  if(dances.length>1){
+    html+='<div class="tabs">';
+    dances.forEach((d,i)=>{
+      const subKey=currentHeatId+'_'+d.dance_code;
+      const submitted=!!submissions[subKey];
+      html+='<div class="tab '+(i===currentDanceIdx?'active':'')+'" onclick="currentDanceIdx='+i+';renderScoring()">'+(d.dance_name||d.dance_code)+(submitted?' ✓':'')+'</div>';
+    });
+    html+='</div>';
+  }
+
+  // Scoring area
+  if(entries.length===0){
+    html+='<div class="empty">No entries loaded for this heat. Sync event data to see competitors.</div>';
+  }else if(scoringMode==='callback'){
+    html+='<p style="font-size:.75rem;color:#94a3b8;margin-bottom:.75rem">Tap competitors to mark callbacks:</p>';
+    entries.forEach((e,i)=>{
+      const markKey=currentHeatId+'_'+dance.dance_code+'_'+e.id;
+      const marked=!!marks[markKey];
+      html+='<div class="list-item" style="cursor:pointer;'+(marked?'border-color:#22c55e;background:#22c55e10':'')+'" onclick="toggleCallback(\\''+e.id+'\\',\\''+dance.dance_code+'\\')"><div class="num">'+(e.competitor_number||i+1)+'</div><div class="info"><div class="name">'+(e.competitor_name||'Competitor '+(i+1))+'</div></div><span style="font-size:1.2rem">'+(marked?'✅':'⬜')+'</span></div>';
+    });
+  }else{
+    html+='<p style="font-size:.75rem;color:#94a3b8;margin-bottom:.75rem">Enter ordinal placements (1 = best):</p>';
+    entries.forEach((e,i)=>{
+      const markKey=currentHeatId+'_'+dance.dance_code+'_'+e.id;
+      const existing=marks[markKey];
+      const val=existing?existing.ordinal:'';
+      html+='<div class="list-item"><div class="num">'+(e.competitor_number||i+1)+'</div><div class="info"><div class="name">'+(e.competitor_name||'Competitor '+(i+1))+'</div></div><input type="number" min="1" max="'+entries.length+'" value="'+val+'" style="width:3rem;padding:.3rem;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#fff;text-align:center;font-size:1rem" onchange="setOrdinal(\\''+e.id+'\\',\\''+dance.dance_code+'\\',this.value)"></div>';
+    });
+  }
+
+  // Submit button
+  const subKey=currentHeatId+'_'+dance.dance_code;
+  const alreadySubmitted=!!submissions[subKey];
+  html+='<div style="margin-top:1rem"><button class="btn '+(alreadySubmitted?'btn-checked':'btn-check')+'" style="width:100%;padding:.7rem" onclick="submitDance(\\''+dance.dance_code+'\\',\\''+dance.dance_name+'\\')">'+(alreadySubmitted?'✓ Submitted — Tap to Resubmit':'Submit '+esc(dance.dance_name||dance.dance_code))+'</button></div>';
+
+  document.getElementById('portal-root').innerHTML=html;
+}
+
+function toggleCallback(entryId,danceCode){
+  const markKey=currentHeatId+'_'+danceCode+'_'+entryId;
+  if(marks[markKey]){delete marks[markKey]}
+  else{marks[markKey]={heat_id:currentHeatId,dance_code:danceCode,heat_entry_id:entryId,callback:true}}
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'score',created_at_ms:Date.now(),payload:{heat_id:currentHeatId,dance_code:danceCode,heat_entry_id:entryId,callback:!!marks[markKey]}};
+  submitOp(op);
+  renderScoring();
+}
+
+function setOrdinal(entryId,danceCode,val){
+  const markKey=currentHeatId+'_'+danceCode+'_'+entryId;
+  const ordinal=parseInt(val)||null;
+  if(ordinal){marks[markKey]={heat_id:currentHeatId,dance_code:danceCode,heat_entry_id:entryId,ordinal:ordinal}}
+  else{delete marks[markKey]}
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'score',created_at_ms:Date.now(),payload:{heat_id:currentHeatId,dance_code:danceCode,heat_entry_id:entryId,ordinal:ordinal}};
+  submitOp(op);
+}
+
+async function submitDance(danceCode,danceName){
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'score_submission',created_at_ms:Date.now(),payload:{heat_id:currentHeatId,dance_code:danceCode}};
+  const result=await submitOp(op);
+  submissions[currentHeatId+'_'+danceCode]={heat_id:currentHeatId,dance_code:danceCode};
+  portalToast('Submitted '+(danceName||danceCode));
+  renderScoring();
 }
 `;
     } else {
