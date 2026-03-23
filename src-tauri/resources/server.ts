@@ -2549,6 +2549,7 @@ function render(){
   list.forEach(h=>{
     const status=heatStatuses[h.id]||'scheduled';
     const statusClass=status;
+    const entries=h.entries||[];
     html+='<div class="heat-header"><div class="heat-title">Heat '+(h.heat_number||'—')+' <span class="heat-status '+statusClass+'">'+status.replace('_',' ')+'</span></div><div class="heat-sub">'+(h.division_name||'')+'</div>';
     if(currentTab==='active'){
       html+='<div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">';
@@ -2556,6 +2557,21 @@ function render(){
       if(status==='on_deck')html+='<button class="btn btn-floor" onclick="setHeatState(\\''+h.id+'\\',\\'on_floor\\')">→ On Floor</button>';
       if(status==='on_floor')html+='<button class="btn btn-check" onclick="setHeatState(\\''+h.id+'\\',\\'completed\\')">✓ Complete</button>';
       html+='</div>';
+      // Scratch buttons for entries (marshal + floor_captain only)
+      if(entries.length>0 && (ROLE==='marshal'||ROLE==='floor_captain')){
+        html+='<div style="margin-top:.5rem;border-top:1px solid #1e293b;padding-top:.5rem">';
+        entries.forEach((e,i)=>{
+          const scratched=marshalStatuses[e.id]==='cancelled';
+          html+='<div class="list-item" style="padding:.4rem .5rem;'+(scratched?'opacity:.4;text-decoration:line-through':'')+'"><div class="num" style="width:2rem">'+(e.competitor_number||i+1)+'</div><div class="info"><div class="name" style="font-size:.8rem">'+(e.competitor_name||'Competitor '+(i+1))+'</div></div>';
+          if(!scratched){
+            html+='<button class="btn" style="background:#dc2626;color:#fff;padding:.25rem .5rem;font-size:.7rem" onclick="event.stopPropagation();doScratch(\\''+e.id+'\\',\\''+h.id+'\\')">✗ Scratch</button>';
+          }else{
+            html+='<span style="color:#94a3b8;font-size:.7rem">Scratched</span>';
+          }
+          html+='</div>';
+        });
+        html+='</div>';
+      }
     }
     html+='</div>';
   });
@@ -2578,6 +2594,16 @@ async function setHeatState(heatId,newStatus){
       await loadData();return;
     }else if(r&&r.reason==='duplicate'){portalToast('Already recorded')}
   }
+  render();
+}
+
+async function doScratch(entryId,heatId){
+  if(!confirm('Scratch this competitor from the heat?'))return;
+  const reason=prompt('Reason for scratch (optional):');
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'scratch',created_at_ms:Date.now(),payload:{heat_entry_id:entryId,reason:reason||'marshal scratch',requested_by:ROLE,requested_at:new Date().toISOString()}};
+  await submitOp(op);
+  marshalStatuses[entryId]='cancelled';
+  portalToast('Competitor scratched');
   render();
 }
 `;
@@ -2611,7 +2637,7 @@ async function loadData(){
 function render(){
   let html='';
   if(nowPlaying){
-    html+='<div class="heat-header" style="border-color:#6366f1"><div class="heat-title">🎵 Now: Heat '+(nowPlaying.heat_number||'—')+' <span class="heat-status on_floor">'+(nowPlaying.status||'playing')+'</span></div><div class="heat-sub">'+(nowPlaying.division_name||'')+' — '+(nowPlaying.dance_code||'')+'</div></div>';
+    html+='<div class="heat-header" style="border-color:#6366f1"><div class="heat-title">🎵 Now: Heat '+(nowPlaying.heat_number||'—')+' <span class="heat-status on_floor">'+(nowPlaying.status||'playing')+'</span></div><div class="heat-sub">'+(nowPlaying.division_name||'')+' — '+(nowPlaying.dance_code||'')+'</div><button class="btn" style="background:#dc2626;color:#fff;margin-top:.5rem;padding:.35rem .7rem;font-size:.75rem" onclick="clearNowPlaying()">⏹ Clear Now Playing</button></div>';
   }else{
     html+='<div class="heat-header"><div class="heat-title" style="color:#94a3b8">No heat currently playing</div></div>';
   }
@@ -2622,9 +2648,32 @@ function render(){
   }
   upcoming.forEach(h=>{
     const status=heatStatuses[h.id]||'scheduled';
-    html+='<div class="list-item"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat '+h.id.slice(0,6))+'</div><div class="detail"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span></div></div></div>';
+    const isPlaying=nowPlaying&&nowPlaying.heat_id===h.id;
+    html+='<div class="list-item"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat '+h.id.slice(0,6))+'</div><div class="detail"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span></div></div>';
+    if(!isPlaying){
+      html+='<button class="btn btn-floor" style="padding:.3rem .6rem;font-size:.7rem" onclick="setNowPlaying(\\''+h.id+'\\','+(h.heat_number||0)+',\\''+esc(h.division_name||'')+'\\')">▶ Now</button>';
+    }else{
+      html+='<span style="color:#4ade80;font-size:.75rem">▶ Playing</span>';
+    }
+    html+='</div>';
   });
   document.getElementById('portal-root').innerHTML=html;
+}
+
+async function setNowPlaying(heatId,heatNum,divName){
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'nowplaying',created_at_ms:Date.now(),payload:{heat_id:heatId,heat_number:heatNum,division_name:divName,status:'playing'}};
+  await submitOp(op);
+  nowPlaying={heat_id:heatId,heat_number:heatNum,division_name:divName,status:'playing'};
+  portalToast('Now playing: Heat '+heatNum);
+  render();
+}
+
+async function clearNowPlaying(){
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'nowplaying',created_at_ms:Date.now(),payload:{heat_id:null,status:'between_heats'}};
+  await submitOp(op);
+  nowPlaying=null;
+  portalToast('Now playing cleared');
+  render();
 }
 `;
     } else if (role === "judge") {
@@ -3001,6 +3050,125 @@ async function chairmanOverride(action){
   if(action==='skip'||action==='complete'){heatStatuses[currentHeatId]='completed'}
   else if(action==='restart'){heatStatuses[currentHeatId]='on_floor'}
   render();
+}
+`;
+    } else if (role === "videographer") {
+      roleScript = `
+let nowPlaying=null;
+let heatsData=[];
+let heatStatuses={};
+
+async function loadData(){
+  try{
+    const [npRes,hsRes]=await Promise.all([
+      api('/state/nowplaying'),
+      api('/state/heats')
+    ]);
+    nowPlaying=npRes.now_playing;
+    heatStatuses={};
+    (hsRes.heats||[]).forEach(h=>heatStatuses[h.heat_id]=h.status);
+    const heatRef=await fetch(BASE+'/state/ref?table=heats',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
+    if(heatRef?.data){
+      heatsData=typeof heatRef.data==='string'?JSON.parse(heatRef.data):heatRef.data;
+    }else{
+      heatsData=Object.keys(heatStatuses).map(id=>({id,heat_number:null,division_name:null}));
+    }
+    render();
+  }catch(e){
+    document.getElementById('portal-root').innerHTML='<div class="empty">⚠ Could not load data: '+esc(e.message)+'<br><button class="btn btn-floor" style="margin-top:1rem" onclick="loadData()">Retry</button></div>';
+  }
+}
+
+function render(){
+  let html='<h3 style="font-size:.9rem;color:#fff;margin-bottom:.75rem">🎬 Videographer View</h3>';
+  if(nowPlaying){
+    html+='<div class="heat-header" style="border-color:#6366f1"><div class="heat-title">🎵 Now Filming: Heat '+(nowPlaying.heat_number||'—')+' <span class="heat-status on_floor">'+(nowPlaying.status||'playing')+'</span></div><div class="heat-sub">'+(nowPlaying.division_name||'')+' — '+(nowPlaying.dance_code||'')+'</div></div>';
+  }else{
+    html+='<div class="heat-header"><div class="heat-title" style="color:#94a3b8">No heat currently on floor</div></div>';
+  }
+  html+='<h3 style="font-size:.85rem;color:#94a3b8;margin:1rem 0 .5rem">Upcoming</h3>';
+  const upcoming=heatsData.filter(h=>{const s=heatStatuses[h.id];return !s||s==='scheduled'||s==='in_hole'||s==='on_deck'||s==='on_floor'});
+  if(upcoming.length===0){
+    html+='<div class="empty">No upcoming heats</div>';
+  }
+  upcoming.forEach(h=>{
+    const status=heatStatuses[h.id]||'scheduled';
+    html+='<div class="list-item"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat '+h.id.slice(0,6))+'</div><div class="detail"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span></div></div></div>';
+  });
+  document.getElementById('portal-root').innerHTML=html;
+}
+`;
+    } else if (role === "event_admin") {
+      roleScript = `
+let heatsData=[];
+let heatStatuses={};
+let staffCount=0;
+let opsCount=0;
+let unsyncedCount=0;
+
+async function loadData(){
+  try{
+    const [hsRes,npRes]=await Promise.all([
+      api('/state/heats'),
+      api('/state/nowplaying')
+    ]);
+    heatStatuses={};
+    (hsRes.heats||[]).forEach(h=>heatStatuses[h.heat_id]=h.status);
+    const heatRef=await fetch(BASE+'/state/ref?table=heats',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
+    if(heatRef?.data){
+      heatsData=typeof heatRef.data==='string'?JSON.parse(heatRef.data):heatRef.data;
+    }else{
+      heatsData=Object.keys(heatStatuses).map(id=>({id,heat_number:null,division_name:null}));
+    }
+    // Get stats
+    try{
+      const healthRes=await fetch(BASE+'/health').then(r=>r.json());
+      staffCount=healthRes.connected_clients||0;
+      opsCount=healthRes.ops_count||0;
+      unsyncedCount=healthRes.unsynced_ops||0;
+    }catch{}
+    render();
+  }catch(e){
+    document.getElementById('portal-root').innerHTML='<div class="empty">⚠ Could not load data: '+esc(e.message)+'<br><button class="btn btn-floor" style="margin-top:1rem" onclick="loadData()">Retry</button></div>';
+  }
+}
+
+function render(){
+  const total=heatsData.length;
+  const completed=heatsData.filter(h=>heatStatuses[h.id]==='completed').length;
+  const onFloor=heatsData.filter(h=>heatStatuses[h.id]==='on_floor').length;
+  const onDeck=heatsData.filter(h=>heatStatuses[h.id]==='on_deck').length;
+  const pct=total>0?Math.round(completed/total*100):0;
+
+  let html='<h3 style="font-size:.9rem;color:#fff;margin-bottom:.75rem">🛡 Admin Dashboard</h3>';
+
+  // Stats grid
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:1rem">';
+  html+='<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:.75rem;text-align:center"><div style="font-size:1.5rem;font-weight:700;color:#4ade80">'+completed+'/'+total+'</div><div style="font-size:.7rem;color:#94a3b8">Heats Done ('+pct+'%)</div></div>';
+  html+='<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:.75rem;text-align:center"><div style="font-size:1.5rem;font-weight:700;color:#6366f1">'+staffCount+'</div><div style="font-size:.7rem;color:#94a3b8">Staff Connected</div></div>';
+  html+='<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:.75rem;text-align:center"><div style="font-size:1.5rem;font-weight:700;color:#f59e0b">'+onFloor+'</div><div style="font-size:.7rem;color:#94a3b8">On Floor Now</div></div>';
+  html+='<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:.75rem;text-align:center"><div style="font-size:1.5rem;font-weight:700;color:'+(unsyncedCount>0?'#f87171':'#4ade80')+'">'+unsyncedCount+'</div><div style="font-size:.7rem;color:#94a3b8">Unsynced Ops</div></div>';
+  html+='</div>';
+
+  // Quick role links
+  html+='<h4 style="font-size:.8rem;color:#94a3b8;margin-bottom:.5rem">Quick Access</h4>';
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:1rem">';
+  const roles=[{r:'scanner',l:'📷 Check-in',c:'#22c55e'},{r:'marshal',l:'📋 Marshal',c:'#3b82f6'},{r:'judge',l:'⭐ Judge',c:'#6366f1'},{r:'announcer',l:'📢 Announcer',c:'#f59e0b'},{r:'scrutineer',l:'📊 Scrutineer',c:'#8b5cf6'},{r:'chairman',l:'⚖ Chairman',c:'#ef4444'}];
+  roles.forEach(({r,l,c})=>{
+    html+='<a href="/portal?role='+r+'&eventId='+EVENT_ID+'&token="+TOKEN" style="display:block;background:#1e293b;border:1px solid '+c+'40;border-radius:8px;padding:.6rem;text-align:center;text-decoration:none;color:#e2e8f0;font-size:.8rem;font-weight:600">'+l+'</a>';
+  });
+  html+='</div>';
+
+  // Current floor activity
+  if(onFloor>0||onDeck>0){
+    html+='<h4 style="font-size:.8rem;color:#94a3b8;margin-bottom:.5rem">Active Heats</h4>';
+    heatsData.filter(h=>{const s=heatStatuses[h.id];return s==='on_floor'||s==='on_deck'}).forEach(h=>{
+      const status=heatStatuses[h.id];
+      html+='<div class="list-item"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat')+'</div><div class="detail"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span></div></div></div>';
+    });
+  }
+
+  document.getElementById('portal-root').innerHTML=html;
 }
 `;
     } else {
