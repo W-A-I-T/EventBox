@@ -2729,6 +2729,236 @@ async function submitDance(danceCode,danceName){
   renderScoring();
 }
 `;
+    } else if (role === "scrutineer") {
+      roleScript = `
+let heatsData=[];
+let heatStatuses={};
+let divisions={};
+let judgeMarks={};
+let judgeSubmissions={};
+let currentHeatId=null;
+
+async function loadData(){
+  try{
+    const [hsRes]=await Promise.all([api('/state/heats')]);
+    heatStatuses={};
+    (hsRes.heats||[]).forEach(h=>heatStatuses[h.heat_id||h.id]=h.status);
+    const heatRef=await fetch(BASE+'/state/ref?table=heats',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
+    if(heatRef?.data){
+      heatsData=typeof heatRef.data==='string'?JSON.parse(heatRef.data):heatRef.data;
+    }else{
+      heatsData=Object.keys(heatStatuses).map(id=>({id,heat_number:null,division_name:null,dances:[],entries:[]}));
+    }
+    const divRef=await fetch(BASE+'/state/ref?table=divisions',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
+    if(divRef?.data){
+      const divArr=typeof divRef.data==='string'?JSON.parse(divRef.data):divRef.data;
+      divArr.forEach(d=>{divisions[d.id]=d});
+    }
+    try{
+      const mRes=await api('/state/judge-marks');
+      judgeMarks={};
+      (mRes.marks||[]).forEach(m=>{
+        const key=m.heat_id+'_'+m.dance_code;
+        if(!judgeMarks[key])judgeMarks[key]=[];
+        judgeMarks[key].push(m);
+      });
+    }catch{}
+    try{
+      const sRes=await api('/state/judge-submissions');
+      judgeSubmissions={};
+      (sRes.submissions||[]).forEach(s=>{
+        const key=s.heat_id+'_'+s.dance_code;
+        if(!judgeSubmissions[key])judgeSubmissions[key]=[];
+        judgeSubmissions[key].push(s);
+      });
+    }catch{}
+    render();
+  }catch(e){
+    document.getElementById('portal-root').innerHTML='<div class="empty">⚠ Could not load data: '+esc(e.message)+'<br><button class="btn btn-floor" style="margin-top:1rem" onclick="loadData()">Retry</button></div>';
+  }
+}
+
+function render(){
+  if(currentHeatId){renderHeatDetail();return}
+  const active=heatsData.filter(h=>{const s=heatStatuses[h.id];return s==='on_floor'||s==='on_deck'});
+  const scheduled=heatsData.filter(h=>{const s=heatStatuses[h.id];return !s||s==='scheduled'||s==='in_hole'});
+  const completed=heatsData.filter(h=>{const s=heatStatuses[h.id];return s==='completed'});
+  let html='<h3 style="font-size:.9rem;color:#fff;margin-bottom:.75rem">📋 Mark Monitor</h3>';
+  if(heatsData.length===0){
+    html+='<div class="empty"><p>No heats loaded yet.</p><button class="btn btn-floor" style="margin-top:.5rem" onclick="loadData()">Refresh</button></div>';
+  }
+  [...active,...scheduled].forEach(h=>{
+    const status=heatStatuses[h.id]||'scheduled';
+    const div=h.division_id?divisions[h.division_id]:null;
+    const dances=(h.dances&&h.dances.length>0)?h.dances:(div&&div.dances?div.dances:[]);
+    const totalDances=dances.length||1;
+    let submittedDances=0;
+    dances.forEach(d=>{
+      const key=h.id+'_'+d.dance_code;
+      if(judgeSubmissions[key]&&judgeSubmissions[key].length>0)submittedDances++;
+    });
+    const pct=totalDances>0?Math.round(submittedDances/totalDances*100):0;
+    html+='<div class="list-item" style="cursor:pointer" onclick="openHeatDetail(\\''+h.id+'\\')"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat')+'</div><div class="detail"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span> · '+pct+'% scored</div></div><span style="color:#6366f1;font-size:.8rem">Detail →</span></div>';
+  });
+  if(completed.length>0){
+    html+='<h3 style="font-size:.85rem;color:#94a3b8;margin:1rem 0 .5rem">Completed ('+completed.length+')</h3>';
+    completed.forEach(h=>{
+      html+='<div class="list-item" style="cursor:pointer;opacity:.6" onclick="openHeatDetail(\\''+h.id+'\\')"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat')+'</div><div class="detail"><span class="heat-status completed">completed</span></div></div><span style="color:#6366f1;font-size:.8rem">Detail →</span></div>';
+    });
+  }
+  document.getElementById('portal-root').innerHTML=html;
+}
+
+function openHeatDetail(heatId){currentHeatId=heatId;render()}
+
+function renderHeatDetail(){
+  const heat=heatsData.find(h=>h.id===currentHeatId);
+  if(!heat){currentHeatId=null;render();return}
+  const div=heat.division_id?divisions[heat.division_id]:null;
+  const dances=(heat.dances&&heat.dances.length>0)?heat.dances:(div&&div.dances?div.dances:[{dance_code:'dance',dance_name:'Dance'}]);
+  const entries=heat.entries||[];
+  const status=heatStatuses[currentHeatId]||'scheduled';
+
+  let html='<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:1rem"><button class="btn" style="background:#334155;color:#e2e8f0;padding:.4rem .7rem" onclick="currentHeatId=null;render()">← Back</button><div><div style="font-size:1rem;font-weight:700;color:#fff">Heat '+(heat.heat_number||'—')+' · '+esc(heat.division_name||'')+'</div><div style="font-size:.75rem;color:#94a3b8"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span></div></div></div>';
+
+  // Mark summary table
+  html+='<div style="margin-bottom:1rem"><h4 style="font-size:.8rem;color:#94a3b8;margin-bottom:.5rem">Submissions by Dance</h4>';
+  html+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.75rem"><thead><tr style="border-bottom:1px solid #334155"><th style="text-align:left;padding:.3rem .5rem;color:#64748b">Dance</th><th style="text-align:center;padding:.3rem .5rem;color:#64748b">Marks</th><th style="text-align:center;padding:.3rem .5rem;color:#64748b">Submitted</th></tr></thead><tbody>';
+  dances.forEach(d=>{
+    const markKey=currentHeatId+'_'+d.dance_code;
+    const markCount=(judgeMarks[markKey]||[]).length;
+    const subCount=(judgeSubmissions[markKey]||[]).length;
+    const isComplete=subCount>0;
+    html+='<tr style="border-bottom:1px solid #1e293b"><td style="padding:.3rem .5rem;color:#e2e8f0">'+(d.dance_name||d.dance_code)+'</td><td style="text-align:center;padding:.3rem .5rem;color:#94a3b8">'+markCount+'</td><td style="text-align:center;padding:.3rem .5rem;color:'+(isComplete?'#4ade80':'#f59e0b')+'">'+(isComplete?'✓ '+subCount:'pending')+'</td></tr>';
+  });
+  html+='</tbody></table></div></div>';
+
+  // Verify results button
+  if(status==='completed'){
+    html+='<button class="btn btn-check" style="width:100%;padding:.7rem;margin-bottom:.75rem" onclick="verifyResults(\\''+currentHeatId+'\\')">✓ Verify Results</button>';
+  }
+
+  // Entries
+  if(entries.length>0){
+    html+='<h4 style="font-size:.8rem;color:#94a3b8;margin-bottom:.5rem">Entries ('+entries.length+')</h4>';
+    entries.forEach((e,i)=>{
+      html+='<div class="list-item"><div class="num">'+(e.competitor_number||i+1)+'</div><div class="info"><div class="name">'+(e.competitor_name||'Competitor '+(i+1))+'</div></div></div>';
+    });
+  }
+  document.getElementById('portal-root').innerHTML=html;
+}
+
+async function verifyResults(heatId){
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'result_publish',created_at_ms:Date.now(),payload:{heat_id:heatId,placements:[],checksum:'scrutineer-verified'}};
+  await submitOp(op);
+  portalToast('Results verified for heat');
+}
+`;
+    } else if (role === "chairman") {
+      roleScript = `
+let heatsData=[];
+let heatStatuses={};
+let divisions={};
+let currentHeatId=null;
+
+async function loadData(){
+  try{
+    const [hsRes]=await Promise.all([api('/state/heats')]);
+    heatStatuses={};
+    (hsRes.heats||[]).forEach(h=>heatStatuses[h.heat_id||h.id]=h.status);
+    const heatRef=await fetch(BASE+'/state/ref?table=heats',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
+    if(heatRef?.data){
+      heatsData=typeof heatRef.data==='string'?JSON.parse(heatRef.data):heatRef.data;
+    }else{
+      heatsData=Object.keys(heatStatuses).map(id=>({id,heat_number:null,division_name:null}));
+    }
+    const divRef=await fetch(BASE+'/state/ref?table=divisions',{headers:AUTH}).then(r=>r.json()).catch(()=>null);
+    if(divRef?.data){
+      const divArr=typeof divRef.data==='string'?JSON.parse(divRef.data):divRef.data;
+      divArr.forEach(d=>{divisions[d.id]=d});
+    }
+    render();
+  }catch(e){
+    document.getElementById('portal-root').innerHTML='<div class="empty">⚠ Could not load data: '+esc(e.message)+'<br><button class="btn btn-floor" style="margin-top:1rem" onclick="loadData()">Retry</button></div>';
+  }
+}
+
+function render(){
+  if(currentHeatId){renderHeatControls();return}
+  const active=heatsData.filter(h=>{const s=heatStatuses[h.id];return s==='on_floor'||s==='on_deck'});
+  const scheduled=heatsData.filter(h=>{const s=heatStatuses[h.id];return !s||s==='scheduled'||s==='in_hole'});
+  const completed=heatsData.filter(h=>{const s=heatStatuses[h.id];return s==='completed'});
+  let html='<h3 style="font-size:.9rem;color:#fff;margin-bottom:.75rem">⚖ Chairman Controls</h3>';
+  [...active,...scheduled].forEach(h=>{
+    const status=heatStatuses[h.id]||'scheduled';
+    const isOnFloor=status==='on_floor';
+    html+='<div class="list-item" style="cursor:pointer;'+(isOnFloor?'border-color:#f59e0b':'')+'" onclick="openHeatCtrl(\\''+h.id+'\\')"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat')+'</div><div class="detail"><span class="heat-status '+status+'">'+status.replace('_',' ')+'</span></div></div><span style="color:#f59e0b;font-size:.8rem">Control →</span></div>';
+  });
+  if(completed.length>0){
+    html+='<h3 style="font-size:.85rem;color:#94a3b8;margin:1rem 0 .5rem">Completed ('+completed.length+')</h3>';
+    completed.slice(0,10).forEach(h=>{
+      html+='<div class="list-item" style="opacity:.5"><div class="num">'+(h.heat_number||'—')+'</div><div class="info"><div class="name">'+(h.division_name||'Heat')+'</div><div class="detail"><span class="heat-status completed">completed</span></div></div></div>';
+    });
+  }
+  document.getElementById('portal-root').innerHTML=html;
+}
+
+function openHeatCtrl(heatId){currentHeatId=heatId;render()}
+
+function renderHeatControls(){
+  const heat=heatsData.find(h=>h.id===currentHeatId);
+  if(!heat){currentHeatId=null;render();return}
+  const status=heatStatuses[currentHeatId]||'scheduled';
+  let html='<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:1rem"><button class="btn" style="background:#334155;color:#e2e8f0;padding:.4rem .7rem" onclick="currentHeatId=null;render()">← Back</button><div><div style="font-size:1rem;font-weight:700;color:#fff">Heat '+(heat.heat_number||'—')+'</div><div style="font-size:.75rem;color:#94a3b8">'+(heat.division_name||'')+'</div></div></div>';
+
+  html+='<div style="font-size:.8rem;color:#94a3b8;margin-bottom:1rem">Current status: <span class="heat-status '+status+'" style="font-size:.8rem">'+status.replace('_',' ')+'</span></div>';
+
+  // Round progression
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:1rem">';
+  const transitions=[
+    {to:'on_deck',label:'→ On Deck',show:status==='scheduled'||status==='in_hole'},
+    {to:'on_floor',label:'→ On Floor',show:status==='on_deck'||status==='scheduled'},
+    {to:'completed',label:'✓ Complete',show:status==='on_floor'},
+    {to:'cancelled',label:'✗ Cancel',show:status!=='completed'&&status!=='cancelled'},
+  ];
+  transitions.filter(t=>t.show).forEach(t=>{
+    html+='<button class="btn '+(t.to==='completed'?'btn-check':t.to==='cancelled'?'btn-off':'btn-floor')+'" style="padding:.6rem;font-size:.8rem" onclick="setHeatStatus(\\''+t.to+'\\')">'+t.label+'</button>';
+  });
+  html+='</div>';
+
+  // Chairman overrides
+  html+='<h4 style="font-size:.8rem;color:#94a3b8;margin-bottom:.5rem">Overrides</h4>';
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:1rem">';
+  html+='<button class="btn" style="background:#334155;color:#e2e8f0;padding:.5rem;font-size:.8rem" onclick="chairmanOverride(\\'skip\\')">⏭ Skip Heat</button>';
+  html+='<button class="btn" style="background:#334155;color:#e2e8f0;padding:.5rem;font-size:.8rem" onclick="chairmanOverride(\\'recall\\')">🔄 Recall</button>';
+  html+='<button class="btn" style="background:#334155;color:#e2e8f0;padding:.5rem;font-size:.8rem" onclick="chairmanOverride(\\'restart\\')">⟳ Restart</button>';
+  html+='<button class="btn" style="background:#334155;color:#e2e8f0;padding:.5rem;font-size:.8rem" onclick="chairmanOverride(\\'complete\\')">✓ Force Complete</button>';
+  html+='</div>';
+
+  // Recall limit
+  html+='<div style="margin-bottom:1rem"><label style="font-size:.75rem;color:#94a3b8;display:block;margin-bottom:.3rem">Recall Limit (callback rounds):</label><input type="number" id="recall-limit" min="1" max="99" value="'+(heat.recall_limit||'')+ '" placeholder="e.g. 12" style="width:5rem;padding:.3rem;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#fff;text-align:center;font-size:.9rem"></div>';
+
+  document.getElementById('portal-root').innerHTML=html;
+}
+
+async function setHeatStatus(newStatus){
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'heat_state',created_at_ms:Date.now(),payload:{heat_id:currentHeatId,status:newStatus}};
+  await submitOp(op);
+  heatStatuses[currentHeatId]=newStatus;
+  portalToast('Heat → '+newStatus.replace('_',' '));
+  render();
+}
+
+async function chairmanOverride(action){
+  const reason=prompt('Reason for '+action+' (optional):');
+  const op={op_id:crypto.randomUUID(),event_id:EVENT_ID,op_type:'chairman_override',created_at_ms:Date.now(),payload:{heat_id:currentHeatId,action:action,reason:reason||''}};
+  await submitOp(op);
+  portalToast('Override: '+action);
+  if(action==='skip'||action==='complete'){heatStatuses[currentHeatId]='completed'}
+  else if(action==='restart'){heatStatuses[currentHeatId]='on_floor'}
+  render();
+}
+`;
     } else {
       roleScript = `
 async function loadData(){
