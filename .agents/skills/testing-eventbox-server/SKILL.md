@@ -145,5 +145,5 @@ Each server restart generates a new room code. Re-read it from stdout.
 - Fixes to `server.ts` must go into dance-flow-control first or they get overwritten by sync
 - Fixes to `lib.rs`, `Cargo.toml`, or other EventBox-only files go directly into EventBox
 
-## Devin Secrets Needed
+## Required Secrets
 None required for local server testing. The server generates its own HMAC secret on startup.
