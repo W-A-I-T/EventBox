@@ -88,6 +88,9 @@ EVENTBOX_EVENT_ID="your-event-uuid" EVENTBOX_PORT=9090 ./EventBox
 | `EVENTBOX_ADMIN_SECRET` | *(same as room code)* | HMAC key for admin token issuance. Set this to require a separate admin password. |
 | `EVENTBOX_SECRET` | *(auto-generated)* | HMAC signing key for all JWT tokens. Auto-generated at startup if not set. |
 | `EVENTBOX_CHASSEFLOW_API` | `https://dance-flow-control.lovable.app` | ChasseFlow cloud API used for reference data sync. |
+| `EVENTBOX_SUPABASE_URL` | *(hardcoded default)* | Supabase project URL used by `/api/sync-from-cloud`. Override to point at a self-hosted instance. |
+| `EVENTBOX_SUPABASE_ANON_KEY` | *(empty)* | Supabase anon key for cloud sync auth. |
+| `EVENTBOX_CLOUD_TOKEN` | *(empty)* | Bearer token for authenticating against the ChasseFlow cloud during sync. |
 
 ---
 
