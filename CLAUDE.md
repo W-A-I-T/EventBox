@@ -4,6 +4,31 @@ LAN Authority Server desktop app for dance competitions. One organizer/judge run
 
 **GitHub:** `gh repo view W-A-I-T/EventBox`
 
+## CRITICAL — Source of truth for server.ts
+
+`src-tauri/resources/server.ts` is **owned by [W-A-I-T/dance-flow-control](https://github.com/W-A-I-T/dance-flow-control)**, not this repo.
+
+**Do not edit `server.ts` directly in EventBox.** Changes made here will be overwritten on the next sync.
+
+The flow is:
+```
+dance-flow-control (source of truth)
+  └── .github/workflows/sync-danceflow.yml in EventBox
+        pulls server.ts from dance-flow-control on every push to dance-flow-control
+        → auto-release-on-sync.yml then cuts a new EventBox release if server.ts changed
+```
+
+To change server logic:
+1. Edit `server.ts` in [dance-flow-control](https://github.com/W-A-I-T/dance-flow-control) (`src-tauri/resources/server.ts` there maps to here via sync)
+2. Push to dance-flow-control
+3. CI in EventBox pulls the update automatically within minutes
+4. If the file changed, a new EventBox release is built and published automatically
+
+To manually trigger a sync without waiting:
+```bash
+gh workflow run sync-danceflow.yml --repo W-A-I-T/EventBox
+```
+
 ## Stack
 
 | Layer | Tech |
@@ -98,4 +123,4 @@ git tag v0.x.y && git push origin v0.x.y
 - Server is the main logic — Rust only handles app lifecycle, process spawning, and orphan cleanup
 - Orphan cleanup: on startup checks `/tmp/eventbox-server.pid`, kills leftover process via `/proc/<pid>/cmdline` (Linux) / `ps` (macOS) / `tasklist` (Windows)
 - Cloud sync: ops are marked `synced_at` to push to dance-flow-control (Supabase). Sync failure does not affect offline operation.
-- `server.ts` is also synced FROM dance-flow-control via GitHub Actions (`sync-danceflow.yml`) — edits to server logic may originate there
+- `server.ts` is synced FROM dance-flow-control (source of truth) via `.github/workflows/sync-danceflow.yml` — never edit it here directly
